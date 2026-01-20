@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.log
+.venv/
+virtualenv/env/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Environment variables
+.env
+.env.*
+
+# Docker
+.dockerignore
+
+# Alembic
+/payment_app/alembic/versions/*.py
+!/payment_app/alembic/versions/__init__.py
