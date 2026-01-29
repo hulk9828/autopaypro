@@ -19,6 +19,11 @@ class ContentService:
             description=data.description,
             keyword=data.keyword.strip().lower(),
         )
+        query = select(Content).where(Content.keyword == data.keyword.strip().lower()) # check if content already exists
+        result = await self.db.execute(query)
+        existing_content = result.scalars().first()
+        if existing_content:
+            AppException().raise_400("Content already exists")
         self.db.add(content)
         await self.db.commit()
         await self.db.refresh(content)
@@ -26,6 +31,26 @@ class ContentService:
 
     async def get_content_by_id(self, content_id: UUID) -> Optional[Content]:
         return await self.db.get(Content, content_id)
+
+    async def get_content_by_keyword(self, keyword: str) -> Optional[Content]:
+        """Return the first content matching the keyword (keyword, title, description)."""
+        if not keyword or not keyword.strip():
+            return None
+        term = f"%{keyword.strip().lower()}%"
+        query = (
+            select(Content)
+            .where(
+                or_(
+                    Content.keyword.ilike(term),
+                    Content.title.ilike(term),
+                    Content.description.ilike(term),
+                )
+            )
+            .order_by(Content.created_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(query)
+        return result.scalars().first()
 
     async def get_contents(
         self,

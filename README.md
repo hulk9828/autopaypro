@@ -97,7 +97,25 @@ docker compose exec app alembic upgrade head
 
 Replace "Initial migration" with an appropriate message for your migration.
 
-### 4. Health Check
+### 4. Database permissions (“permission denied for table …”)
+
+If the app connects to PostgreSQL as a non-superuser (e.g. `payment_user`) and you see errors like **“permission denied for table contents”** or **“permission denied for table admins”**, grant the app user access to all tables and sequences:
+
+**On the host where PostgreSQL runs** (using the same database and superuser you use for migrations):
+
+```bash
+psql -U postgres -d payment_db -f scripts/grant_app_permissions.sql
+```
+
+If PostgreSQL runs in Docker:
+
+```bash
+docker exec -i <postgres_container_name> psql -U postgres -d payment_db < scripts/grant_app_permissions.sql
+```
+
+If your app user is not `payment_user`, edit `scripts/grant_app_permissions.sql` and replace `payment_user` with your username, then run the script again.
+
+### 5. Health Check
 
 The app runs on **port 8218**. Access the health check endpoint:
 

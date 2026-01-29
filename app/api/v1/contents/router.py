@@ -34,8 +34,8 @@ async def create_content(
 @router.get(
     "/",
     response_model=List[ContentResponse],
-    summary="Fetch content",
-    description="List content. Use keyword query to fetch content matching that keyword (searches keyword, title, description).",
+    summary="List content",
+    description="List all content with optional keyword filter.",
     tags=["content"],
 )
 async def get_contents(
@@ -47,6 +47,25 @@ async def get_contents(
     service = ContentService(db)
     contents = await service.get_contents(keyword=keyword, skip=skip, limit=limit)
     return [ContentResponse.model_validate(c) for c in contents]
+
+
+@router.get(
+    "/by-keyword",
+    response_model=ContentResponse,
+    summary="Fetch one content by keyword",
+    description="Fetch the first content matching the given keyword. Searches in keyword, title, and description. Returns 404 if none found.",
+    tags=["content"],
+)
+async def fetch_content_by_keyword(
+    keyword: str = Query(..., min_length=1, description="Keyword to search (keyword, title, description)"),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.core.exceptions import AppException
+    service = ContentService(db)
+    content = await service.get_content_by_keyword(keyword=keyword)
+    if not content:
+        AppException().raise_404("No content found for this keyword")
+    return ContentResponse.model_validate(content)
 
 
 @router.get(
