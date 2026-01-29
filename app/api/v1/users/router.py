@@ -1,12 +1,13 @@
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.users.schemas import UserCreate, UserResponse, UserUpdate
 from app.api.v1.users.service import UserService
 from app.core.deps import get_db, get_current_active_admin_user
+from app.core.exceptions import AppException
 from app.models.enums import Role
 
 
@@ -58,7 +59,7 @@ async def get_user(
     user_service = UserService(db)
     user = await user_service.get_user_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        AppException().raise_404("User not found")
     return UserResponse.from_orm(user)
 
 
@@ -76,7 +77,7 @@ async def update_user(
     user_service = UserService(db)
     updated_user = await user_service.update_user(user_id, user_data)
     if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        AppException().raise_404("User not found")
     return UserResponse.from_orm(updated_user)
 
 
@@ -93,5 +94,5 @@ async def delete_user(
     user_service = UserService(db)
     deleted = await user_service.delete_user(user_id)
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        AppException().raise_404("User not found")
     return None

@@ -19,5 +19,6 @@ class Admin(Base):
     password_hash = Column(String, nullable=False)
     role = Column(String, default=Role.admin.value, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    profile_pic = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

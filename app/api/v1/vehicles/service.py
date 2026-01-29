@@ -1,11 +1,11 @@
 from typing import List, Optional
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.api.v1.vehicles.schemas import CreateVehicleRequest, UpdateVehicleRequest
+from app.core.exceptions import AppException
 from app.models.vehicle import Vehicle
 from app.models.loan import Loan
 from app.models.customer_vehicle import CustomerVehicle
@@ -22,23 +22,14 @@ class VehicleService:
             select(Vehicle).where(Vehicle.vin == vehicle_data.vin)
         )
         if existing_vehicle.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Vehicle with VIN {vehicle_data.vin} already exists"
-            )
+            AppException().raise_400(f"Vehicle with VIN {vehicle_data.vin} already exists")
 
         # Validate status and condition
         if vehicle_data.status and vehicle_data.status not in [s.value for s in VehicleStatus]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status. Must be one of: {[s.value for s in VehicleStatus]}"
-            )
+            AppException().raise_400(f"Invalid status. Must be one of: {[s.value for s in VehicleStatus]}")
 
         if vehicle_data.condition and vehicle_data.condition not in [c.value for c in VehicleCondition]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid condition. Must be one of: {[c.value for c in VehicleCondition]}"
-            )
+            AppException().raise_400(f"Invalid condition. Must be one of: {[c.value for c in VehicleCondition]}")
 
         new_vehicle = Vehicle(
             id=uuid.uuid4(),
@@ -96,10 +87,7 @@ class VehicleService:
         # Get vehicle directly from database
         vehicle = await self.db.get(Vehicle, vehicle_id)
         if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Vehicle with id {vehicle_id} not found"
-            )
+            AppException().raise_404(f"Vehicle with id {vehicle_id} not found")
 
         # Check if VIN is being updated and if it already exists
         if vehicle_data.vin and vehicle_data.vin != vehicle.vin:
@@ -108,23 +96,14 @@ class VehicleService:
             )
             existing_vehicle = result.scalar_one_or_none()
             if existing_vehicle:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Vehicle with VIN {vehicle_data.vin} already exists"
-                )
+                AppException().raise_400(f"Vehicle with VIN {vehicle_data.vin} already exists")
 
         # Validate status and condition if provided
         if vehicle_data.status and vehicle_data.status not in [s.value for s in VehicleStatus]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status. Must be one of: {[s.value for s in VehicleStatus]}"
-            )
+            AppException().raise_400(f"Invalid status. Must be one of: {[s.value for s in VehicleStatus]}")
 
         if vehicle_data.condition and vehicle_data.condition not in [c.value for c in VehicleCondition]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid condition. Must be one of: {[c.value for c in VehicleCondition]}"
-            )
+            AppException().raise_400(f"Invalid condition. Must be one of: {[c.value for c in VehicleCondition]}")
 
         # Update fields
         update_data = vehicle_data.model_dump(exclude_unset=True)
@@ -140,30 +119,21 @@ class VehicleService:
         # Get vehicle directly from database
         vehicle = await self.db.get(Vehicle, vehicle_id)
         if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Vehicle with id {vehicle_id} not found"
-            )
+            AppException().raise_404(f"Vehicle with id {vehicle_id} not found")
 
         # Check if vehicle is associated with any loans
         loan_result = await self.db.execute(
             select(Loan).where(Loan.vehicle_id == vehicle_id)
         )
         if loan_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot delete vehicle that has associated loans"
-            )
+            AppException().raise_400("Cannot delete vehicle that has associated loans")
 
         # Check if vehicle is assigned to any customers
         customer_vehicle_result = await self.db.execute(
             select(CustomerVehicle).where(CustomerVehicle.vehicle_id == vehicle_id)
         )
         if customer_vehicle_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot delete vehicle that is assigned to customers"
-            )
+            AppException().raise_400("Cannot delete vehicle that is assigned to customers")
 
         await self.db.delete(vehicle)
         await self.db.commit()

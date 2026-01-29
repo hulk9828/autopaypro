@@ -132,3 +132,61 @@ AutoLoanPro Team
         body=html_body,
         is_html=True
     )
+
+
+async def send_otp_email(
+    customer_email: str,
+    customer_name: str,
+    otp_code: str
+) -> bool:
+    """
+    Send OTP email to customer for password reset.
+    
+    Args:
+        customer_email: Customer's email address
+        customer_name: Customer's full name
+        otp_code: Generated OTP code
+    
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    subject = "AutoLoanPro - Password Reset OTP"
+    
+    body = f"""
+Dear {customer_name},
+
+You have requested to reset your password. Please use the following OTP code to proceed:
+
+OTP Code: {otp_code}
+
+This OTP will expire in 10 minutes. If you did not request this password reset, please ignore this email.
+
+If you have any questions, please don't hesitate to contact our support team.
+
+Best regards,
+AutoLoanPro Team
+"""
+    
+    html_body = f"""
+<html>
+  <body>
+    <h2>Password Reset Request</h2>
+    <p>Dear {customer_name},</p>
+    <p>You have requested to reset your password. Please use the following OTP code to proceed:</p>
+    <div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0;">
+      <h1 style="color: #333; font-size: 32px; letter-spacing: 5px; margin: 0;">{otp_code}</h1>
+    </div>
+    <p><em>This OTP will expire in 10 minutes.</em></p>
+    <p>If you did not request this password reset, please ignore this email.</p>
+    <p>If you have any questions, please don't hesitate to contact our support team.</p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
+    
+    return await send_email(
+        to_email=customer_email,
+        subject=subject,
+        body=html_body,
+        is_html=True
+    )

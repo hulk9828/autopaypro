@@ -25,3 +25,4 @@ class Loan(Base):
 
     customer = relationship("Customer", back_populates="loans")
     vehicle = relationship("Vehicle", back_populates="loans")
+    payments = relationship("Payment", back_populates="loan")

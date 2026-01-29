@@ -1,11 +1,11 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.api.v1.users.schemas import UserCreate, UserUpdate
+from app.core.exceptions import AppException
 from app.models.user import User
 from app.core.security import get_password_hash
 
@@ -29,7 +29,7 @@ class UserService:
     async def create_user(self, user_data: UserCreate) -> User:
         db_user = await self.get_user_by_email(user_data.email)
         if db_user:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+            AppException().raise_400("Email already registered")
         
         hashed_password = get_password_hash(user_data.password)
         new_user = User(**user_data.model_dump(exclude={'password'}), password_hash=hashed_password)

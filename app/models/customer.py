@@ -22,9 +22,13 @@ class Customer(Base):
     address = Column(String, nullable=False)
     driver_license_number = Column(String, unique=True, nullable=False)
     employer_name = Column(String, nullable=True)
+    profile_pic = Column(String, nullable=True)
     account_status = Column(String, default=AccountStatus.active.value, nullable=False)
+    otp_code = Column(String, nullable=True)
+    otp_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     customer_vehicles = relationship("CustomerVehicle", back_populates="customer")
     loans = relationship("Loan", back_populates="customer")
+    payments = relationship("Payment", back_populates="customer")

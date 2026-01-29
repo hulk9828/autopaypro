@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   web:
     build:
@@ -12,7 +10,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://kushagra:root123@host.docker.internal:5432/payment_db
     ports:
-      - "127.0.0.1:8218:8218"
+      - "8218:8218"  # Bind to all interfaces (0.0.0.0) to allow external access
     volumes:
       - .:/app
     command: >

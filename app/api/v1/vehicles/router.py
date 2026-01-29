@@ -1,7 +1,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status, Query, HTTPException
+from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.vehicles.schemas import (
@@ -10,7 +10,9 @@ from app.api.v1.vehicles.schemas import (
     VehicleResponse
 )
 from app.api.v1.vehicles.service import VehicleService
-from app.core.deps import get_db
+from app.core.deps import get_db, get_current_active_admin_user
+from app.core.exceptions import AppException
+from app.models.user import User
 
 router = APIRouter()
 
@@ -20,10 +22,12 @@ router = APIRouter()
     response_model=VehicleResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new vehicle",
-    description="Create a new vehicle in the inventory"
+    description="Create a new vehicle in the inventory. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def create_vehicle(
     vehicle_data: CreateVehicleRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
@@ -35,13 +39,15 @@ async def create_vehicle(
     "/",
     response_model=List[VehicleResponse],
     summary="Get all vehicles",
-    description="Retrieve a list of vehicles with optional filtering by status and condition"
+    description="Retrieve a list of vehicles with optional filtering by status and condition. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def get_all_vehicles(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     status: Optional[str] = Query(None, description="Filter by vehicle status (available/sold)"),
     condition: Optional[str] = Query(None, description="Filter by vehicle condition (bad/good/excellent)"),
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
@@ -58,19 +64,18 @@ async def get_all_vehicles(
     "/{vehicle_id}",
     response_model=VehicleResponse,
     summary="Get vehicle by ID",
-    description="Retrieve a specific vehicle by its ID"
+    description="Retrieve a specific vehicle by its ID. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def get_vehicle_by_id(
     vehicle_id: UUID,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
     result = await vehicle_service.get_vehicle_by_id(vehicle_id)
     if not result or not result["vehicle"]:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Vehicle with id {vehicle_id} not found"
-        )
+        AppException().raise_404(f"Vehicle with id {vehicle_id} not found")
     return VehicleResponse.model_validate(result["vehicle"])
 
 
@@ -78,19 +83,18 @@ async def get_vehicle_by_id(
     "/vin/{vin}",
     response_model=VehicleResponse,
     summary="Get vehicle by VIN",
-    description="Retrieve a specific vehicle by its VIN (Vehicle Identification Number)"
+    description="Retrieve a specific vehicle by its VIN (Vehicle Identification Number). Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def get_vehicle_by_vin(
     vin: str,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
     result = await vehicle_service.get_vehicle_by_vin(vin)
     if not result or not result["vehicle"]:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Vehicle with VIN {vin} not found"
-        )
+        AppException().raise_404(f"Vehicle with VIN {vin} not found")
     return VehicleResponse.model_validate(result["vehicle"])
 
 
@@ -98,11 +102,13 @@ async def get_vehicle_by_vin(
     "/{vehicle_id}",
     response_model=VehicleResponse,
     summary="Update vehicle",
-    description="Update an existing vehicle's information"
+    description="Update an existing vehicle's information. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def update_vehicle(
     vehicle_id: UUID,
     vehicle_data: UpdateVehicleRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
@@ -114,11 +120,13 @@ async def update_vehicle(
     "/{vehicle_id}",
     response_model=VehicleResponse,
     summary="Partially update vehicle",
-    description="Partially update an existing vehicle's information"
+    description="Partially update an existing vehicle's information. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def patch_vehicle(
     vehicle_id: UUID,
     vehicle_data: UpdateVehicleRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
@@ -130,10 +138,12 @@ async def patch_vehicle(
     "/{vehicle_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete vehicle",
-    description="Delete a vehicle from the inventory. Cannot delete vehicles with associated loans or customer assignments."
+    description="Delete a vehicle from the inventory. Cannot delete vehicles with associated loans or customer assignments. Admin only.",
+    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def delete_vehicle(
     vehicle_id: UUID,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     vehicle_service = VehicleService(db)
