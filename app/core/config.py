@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -18,12 +19,13 @@ class Settings(BaseSettings):
     ENVIRONMENT: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     ALGORITHM: str
-    MAIL_FROM: str
-    MAIL_FROM_NAME: str
-    MAIL_USERNAME: str
-    MAIL_PASSWORD: str
-    MAIL_SERVER: str
-    MAIL_PORT: int
+    # Mail: accept MAIL_* or SMTP_* (e.g. .env uses SMTP_*)
+    MAIL_FROM: str = Field(validation_alias=AliasChoices("MAIL_FROM", "SMTP_FROM_EMAIL"))
+    MAIL_FROM_NAME: str = Field(default="AutoLoanPro", validation_alias=AliasChoices("MAIL_FROM_NAME", "SMTP_FROM_NAME"))
+    MAIL_USERNAME: str = Field(validation_alias=AliasChoices("MAIL_USERNAME", "SMTP_USER"))
+    MAIL_PASSWORD: str = Field(validation_alias=AliasChoices("MAIL_PASSWORD", "SMTP_PASSWORD"))
+    MAIL_SERVER: str = Field(validation_alias=AliasChoices("MAIL_SERVER", "SMTP_HOST"))
+    MAIL_PORT: int = Field(validation_alias=AliasChoices("MAIL_PORT", "SMTP_PORT"))
 
     # S3 for profile photo upload (optional; leave empty to disable)
     AWS_ACCESS_KEY_ID: str | None = None

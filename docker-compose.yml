@@ -8,11 +8,15 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://kushagra:root123@host.docker.internal:5432/payment_db
+      # Connect to host Postgres; use same user as in .env (POSTGRES_USER/POSTGRES_PASSWORD)
+      - DATABASE_URL=postgresql+asyncpg://payment_user:1234@host.docker.internal:5432/payment_db
+    extra_hosts:
+      # Required on Linux: resolve host.docker.internal to the host (so container can reach host Postgres)
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8218:8218"  # Bind to all interfaces (0.0.0.0) to allow external access
+      - "0.0.0.0:8018:8018"
     volumes:
       - .:/app
     command: >
       sh -c "alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8218 --reload"
+      uvicorn app.main:app --host 0.0.0.0 --port 8018 --reload"

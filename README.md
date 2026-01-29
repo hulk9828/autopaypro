@@ -84,7 +84,7 @@ Then, run the services:
 docker compose up
 ```
 
-This will start the FastAPI application and a PostgreSQL database. The FastAPI application will be accessible at `http://localhost:8000`.
+This will start the FastAPI application and a PostgreSQL database. The FastAPI application will be accessible at `http://localhost:8218`.
 
 ### 3. Database Migrations (using Alembic)
 
@@ -99,10 +99,59 @@ Replace "Initial migration" with an appropriate message for your migration.
 
 ### 4. Health Check
 
-Access the health check endpoint:
+The app runs on **port 8218**. Access the health check endpoint:
 
-```
-GET http://localhost:8000/api/v1/health
+- From the server: `http://localhost:8218/api/v1/health`
+- From outside: `http://<server-ip-or-hostname>:8218/api/v1/health`
+
+This should return: `{ "status": "ok" }`.
+
+---
+
+## Accessing the app from outside the server
+
+If the app works with `curl` on the server but **not from your browser or another machine**, the blocker is almost always the **AWS Security Group** (or another cloud firewall). Use the steps below.
+
+### 1. Confirm the app and port on the server
+
+On the server run:
+
+```bash
+# Should return: {"status":"ok"}
+curl -s http://127.0.0.1:8218/api/v1/health
+
+# Check something is listening on 8218
+ss -tlnp | grep 8218
+# or: sudo lsof -i :8218
 ```
 
-This should return: `{ "status": "ok" }`
+If these work, the app is fine. The issue is network/firewall between the internet and your server.
+
+### 2. Open port 8218 in AWS (required on EC2)
+
+- **AWS Console** → **EC2** → **Instances** → select your instance.
+- Note the **Security group** (e.g. `sg-xxxxx`) and click it.
+- **Inbound rules** → **Edit inbound rules** → **Add rule**:
+  - **Type:** Custom TCP
+  - **Port range:** `8218`
+  - **Source:** Your IP (recommended) or `0.0.0.0/0` (anywhere)
+- **Save rules**.
+
+Without this rule, traffic to port 8218 is dropped (you'll see "Connection timed out" from outside or when curling the public IP from the server). You can confirm with `bash scripts/check-access.sh` on the server.
+
+### 3. Use the server’s public IP (not localhost)
+
+From your laptop/browser use the **public IP or hostname** of the EC2 instance, not `localhost`:
+
+```bash
+# On the server, get your public IP (for your info)
+curl -s http://checkip.amazonaws.com
+```
+
+Then from outside: `http://<that-public-ip>:8218/api/v1/health` or `http://<that-public-ip>:8218/docs`.
+
+### 4. If it still fails
+
+- **UFW on the server:** If you use `ufw`, allow the port: `sudo ufw allow 8218/tcp` then `sudo ufw reload` (and ensure `ufw status` shows 8218 allowed).
+- **Wrong URL:** Use `http://` (not `https://`) unless you have TLS in front. Port must be `:8218`.
+- **Timeout vs connection refused:** Timeout usually means Security Group or network blocking. Connection refused usually means nothing is listening on that port on the server.

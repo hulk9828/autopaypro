@@ -12,11 +12,12 @@ virtualenv/env/
 
 # Environment variables
 .env
+env/    
 .env.*
 
 # Docker
 .dockerignore
 
 # Alembic
-/payment_app/alembic/versions/*.py
-!/payment_app/alembic/versions/__init__.py
+/payment_app/alembic/versions/ 
+!/payment_app/alembic/versions/__init__.py≥
