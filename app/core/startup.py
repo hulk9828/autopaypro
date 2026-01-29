@@ -12,6 +12,33 @@ from app.models.enums import Role
 
 logger = logging.getLogger(__name__)
 
+# SQL to create payments table if not exists (matches migration 79bbdc53ad56)
+PAYMENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS payments (
+    id UUID NOT NULL PRIMARY KEY,
+    loan_id UUID NOT NULL REFERENCES loans(id),
+    customer_id UUID NOT NULL REFERENCES customers(id),
+    amount FLOAT NOT NULL,
+    payment_method VARCHAR NOT NULL,
+    payment_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    due_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE,
+    updated_at TIMESTAMP WITHOUT TIME ZONE
+);
+"""
+
+
+async def ensure_payments_table():
+    """Create payments table if it does not exist (so app works even if migrations weren't run)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(text(PAYMENTS_TABLE_SQL))
+            await session.commit()
+            logger.info("Payments table ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure payments table (it may already exist or DB not ready): %s", e)
+
 
 async def ensure_admins_table_exists(session):
     """Check if admins table exists."""

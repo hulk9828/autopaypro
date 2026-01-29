@@ -28,12 +28,14 @@ app.add_middleware(
 # Include API router
 app.include_router(api_router, prefix="/api/v1")
 
-from app.core.startup import ensure_default_admin
+from app.core.startup import ensure_default_admin, ensure_payments_table
 
 
 @app.on_event("startup")
 async def startup_event():
     """Application startup event."""
+    # Ensure payments table exists (create if missing)
+    await ensure_payments_table()
     # Ensure default admin exists
     await ensure_default_admin()
 
