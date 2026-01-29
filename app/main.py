@@ -1,12 +1,19 @@
+from pathlib import Path
+
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import ValidationError
-from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
 from app.api.v1.api_router import api_router
 from app.core.config import settings
 
+# Path to frontend build
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # Create FastAPI app
 app = FastAPI(
@@ -25,8 +32,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API router
+
+async def spa_fallback(request: Request, call_next):
+    """Serve index.html for 404 on non-API GET requests so SPA client-side routing works."""
+    response = await call_next(request)
+    if (
+        response.status_code == 404
+        and request.method == "GET"
+        and not request.url.path.startswith("/api")
+        and STATIC_DIR.is_dir()
+    ):
+        index_path = STATIC_DIR / "index.html"
+        if index_path.is_file():
+            return FileResponse(str(index_path))
+    return response
+
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=spa_fallback)
+
+# Include API router (must be before static so /api takes precedence)
 app.include_router(api_router, prefix="/api/v1")
+
+# Serve frontend build from app/static
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 from app.core.startup import ensure_default_admin, ensure_payments_table
 
