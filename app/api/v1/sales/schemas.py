@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 
@@ -75,6 +75,23 @@ class SaleListItem(BaseModel):
     bi_weekly_payment_amount: float
     term_months: float
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SalesSummary(BaseModel):
+    """Dashboard summary for sales list."""
+    total_sales: int = Field(..., description="Total number of sales")
+    total_value: float = Field(..., description="Total value of all sales ($)")
+    active_loans: int = Field(..., description="Number of active loans")
+    this_month: int = Field(..., description="Sales created this month")
+
+
+class SalesListResponse(BaseModel):
+    """List sales response with summary stats."""
+    summary: SalesSummary
+    sales: List["SaleListItem"]
 
     class Config:
         from_attributes = True

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status, Query
@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.sales.schemas import (
     CreateSaleRequest,
     SaleResponse,
-    SaleListItem,
+    SalesListResponse,
     BiWeeklyEstimateRequest,
     BiWeeklyEstimateResponse,
 )
@@ -61,18 +61,19 @@ async def create_sale(
 
 @router.get(
     "/",
-    response_model=List[SaleListItem],
+    response_model=SalesListResponse,
     status_code=status.HTTP_200_OK,
     summary="List sales",
-    description="List all sales (loans). Optionally filter by customer_id.",
+    description="List all sales (loans) with summary stats. Search by customer or vehicle; optionally filter by customer_id.",
     tags=["sales"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
 async def list_sales(
     customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    search: Optional[str] = Query(None, description="Search by customer name or vehicle (make, model, year)"),
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List sales. When customer_id is provided, returns only that customer's sales."""
+    """List sales with dashboard summary. Search by customer or vehicle; filter by customer_id if provided."""
     service = SaleService(db)
-    return await service.get_sales(customer_id)
+    return await service.get_sales(customer_id=customer_id, search=search)

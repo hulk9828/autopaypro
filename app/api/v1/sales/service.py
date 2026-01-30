@@ -1,14 +1,17 @@
 import uuid
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 
 from app.api.v1.sales.schemas import (
     CreateSaleRequest,
     SaleResponse,
     SaleListItem,
+    SalesSummary,
+    SalesListResponse,
     BiWeeklyEstimateRequest,
     BiWeeklyEstimateResponse,
 )
@@ -158,8 +161,50 @@ class SaleService:
             created_at=loan.created_at,
         )
 
-    async def get_sales(self, customer_id: Optional[uuid.UUID] = None) -> List[SaleListItem]:
-        """List sales (loans). If customer_id given, filter by that customer."""
+    def _search_condition(self, term: str):
+        """Condition: customer name or vehicle (make/model/year) matches search term."""
+        return or_(
+            Customer.first_name.ilike(term),
+            Customer.last_name.ilike(term),
+            Vehicle.make.ilike(term),
+            Vehicle.model.ilike(term),
+            Vehicle.year.ilike(term),
+        )
+
+    async def get_sales(
+        self,
+        customer_id: Optional[uuid.UUID] = None,
+        search: Optional[str] = None,
+    ) -> SalesListResponse:
+        """List sales (loans) with summary stats. Filter by customer_id and/or search (customer or vehicle)."""
+        # Start of current month (UTC) for this_month count
+        now = datetime.utcnow()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        search_term = f"%{(search or '').strip().lower()}%" if (search and search.strip()) else None
+
+        # Base filters
+        def apply_filters(q, *, join_customer_vehicle: bool = False):
+            if join_customer_vehicle:
+                q = q.join(Customer, Loan.customer_id == Customer.id).join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            if customer_id is not None:
+                q = q.where(Loan.customer_id == customer_id)
+            if search_term:
+                if not join_customer_vehicle:
+                    q = q.join(Customer, Loan.customer_id == Customer.id).join(Vehicle, Loan.vehicle_id == Vehicle.id)
+                q = q.where(self._search_condition(search_term))
+            return q
+
+        # Aggregate query for summary (same filter as list)
+        q_summary = select(
+            func.count(Loan.id).label("total_sales"),
+            func.coalesce(func.sum(Loan.total_purchase_price), 0).label("total_value"),
+            func.count(Loan.id).label("active_loans"),
+            func.count(Loan.id).filter(Loan.created_at >= start_of_month).label("this_month"),
+        ).select_from(Loan)
+        q_summary = apply_filters(q_summary, join_customer_vehicle=bool(search_term))
+        summary_row = (await self.db.execute(q_summary)).one()
+
+        # List query
         q = (
             select(Loan, Customer, Vehicle)
             .join(Customer, Loan.customer_id == Customer.id)
@@ -168,6 +213,8 @@ class SaleService:
         )
         if customer_id is not None:
             q = q.where(Loan.customer_id == customer_id)
+        if search_term:
+            q = q.where(self._search_condition(search_term))
         result = await self.db.execute(q)
         rows = result.all()
         out = []
@@ -187,4 +234,11 @@ class SaleService:
                     created_at=loan.created_at,
                 )
             )
-        return out
+
+        summary = SalesSummary(
+            total_sales=summary_row.total_sales or 0,
+            total_value=float(summary_row.total_value or 0),
+            active_loans=summary_row.active_loans or 0,
+            this_month=summary_row.this_month or 0,
+        )
+        return SalesListResponse(summary=summary, sales=out)

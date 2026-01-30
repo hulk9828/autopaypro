@@ -1,10 +1,13 @@
 -- Run this script as a PostgreSQL superuser (e.g. postgres) to grant the app user
--- access to all tables. Fixes: "permission denied for table contents/admins/..."
+-- access to all tables. Fixes: "permission denied for table admins/contents/..."
 --
--- Usage (from host where Postgres runs):
---   psql -U postgres -d payment_db -f scripts/grant_app_permissions.sql
--- Or from inside a postgres container:
+-- Usage (from host where Postgres runs, e.g. your Mac):
+--   cd payment_app && psql -U postgres -d payment_db -f scripts/grant_app_permissions.sql
+--
+-- If Postgres runs in Docker:
 --   docker exec -i <postgres_container> psql -U postgres -d payment_db < scripts/grant_app_permissions.sql
+--
+-- If your app uses a different DB user, replace payment_user below and re-run.
 
 \echo 'Granting permissions to payment_user on payment_db...'
 
