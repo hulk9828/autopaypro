@@ -16,6 +16,7 @@ from app.api.v1.dashboard.schemas import (
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment
+from app.models.vehicle import Vehicle
 from app.models.enums import AccountStatus
 
 
@@ -152,17 +153,19 @@ class DashboardService:
         )
 
     async def get_recent_payments(self, limit: int = 10) -> List[RecentPayment]:
-        """Get recent payments."""
+        """Get recent payments (admin dashboard)."""
         result = await self.db.execute(
-            select(Payment, Customer)
+            select(Payment, Customer, Vehicle)
             .join(Customer, Payment.customer_id == Customer.id)
+            .join(Loan, Payment.loan_id == Loan.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
             .order_by(Payment.payment_date.desc())
             .limit(limit)
         )
-        
         recent_payments = []
-        for payment, customer in result.all():
+        for payment, customer, vehicle in result.all():
             customer_name = f"{customer.first_name} {customer.last_name}"
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             recent_payments.append(
                 RecentPayment(
                     payment_id=payment.id,
@@ -170,10 +173,11 @@ class DashboardService:
                     customer_name=customer_name,
                     payment_date=payment.payment_date,
                     amount=payment.amount,
-                    payment_method=payment.payment_method
+                    payment_method=payment.payment_method,
+                    status=payment.status,
+                    vehicle_display=vehicle_display,
                 )
             )
-        
         return recent_payments
 
     async def get_overdue_accounts(self) -> List[OverdueAccount]:

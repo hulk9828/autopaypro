@@ -26,9 +26,16 @@ class RecentPayment(BaseModel):
     payment_date: datetime
     amount: float
     payment_method: str
+    status: Optional[str] = None  # completed | failed
+    vehicle_display: Optional[str] = None  # e.g. "2024 Honda Civic"
 
     class Config:
         from_attributes = True
+
+
+class RecentPaymentsResponse(BaseModel):
+    """Response for the recent payments endpoint."""
+    recent_payments: List[RecentPayment]
 
 
 class OverdueAccount(BaseModel):
