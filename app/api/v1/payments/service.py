@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.payments.schemas import TransactionItem
 from app.core.config import settings
 from app.core.exceptions import AppException
+from app.core.notification_service import scope_key_for_payment, send_payment_notification
 from app.core.stripe_client import create_payment_intent, confirm_payment_intent_with_token
 from app.models.customer import Customer
 from app.models.loan import Loan
@@ -197,6 +198,15 @@ class PaymentService:
                 due_date=payment.due_date,
                 created_at=payment.created_at,
             )
+            # Event-based: Payment Received notification
+            await send_payment_notification(
+                self.db,
+                customer_id=customer_id,
+                notification_type="payment_received",
+                scope_key=scope_key_for_payment(payment.id),
+                title="Payment received",
+                body=f"Your payment of ${payment.amount:.2f} has been received.",
+            )
 
         return {
             "success": True,
@@ -326,3 +336,44 @@ class PaymentService:
                 )
             )
         return items, total
+
+    async def update_payment_status_admin(
+        self,
+        payment_id: UUID,
+        status: str,
+    ) -> TransactionItem | None:
+        """Admin updates payment status. Sends 'payment_confirmed' notification when status is completed."""
+        payment = await self.db.get(Payment, payment_id)
+        if not payment:
+            return None
+        payment.status = status
+        self.db.add(payment)
+        await self.db.commit()
+        await self.db.refresh(payment)
+        if status == "completed":
+            await send_payment_notification(
+                self.db,
+                customer_id=payment.customer_id,
+                notification_type="payment_confirmed",
+                scope_key=scope_key_for_payment(payment.id),
+                title="Payment confirmed",
+                body=f"Your payment of ${payment.amount:.2f} has been confirmed.",
+            )
+        loan = await self.db.get(Loan, payment.loan_id)
+        customer = await self.db.get(Customer, payment.customer_id)
+        vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
+        vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+        customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+        return TransactionItem(
+            id=payment.id,
+            loan_id=payment.loan_id,
+            customer_id=payment.customer_id,
+            customer_name=customer_name,
+            vehicle_display=vehicle_display,
+            amount=payment.amount,
+            payment_method=payment.payment_method,
+            status=payment.status,
+            payment_date=payment.payment_date,
+            due_date=payment.due_date,
+            created_at=payment.created_at,
+        )

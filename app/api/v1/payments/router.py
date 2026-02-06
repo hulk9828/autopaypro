@@ -9,9 +9,12 @@ from app.api.v1.payments.schemas import (
     MakePaymentRequest,
     MakePaymentResponse,
     TransactionHistoryResponse,
+    TransactionItem,
+    UpdatePaymentStatusRequest,
 )
 from app.api.v1.payments.service import PaymentService
 from app.core.deps import get_db, get_current_active_admin_user, get_current_customer
+from app.core.exceptions import AppException
 from app.models.customer import Customer
 from app.models.user import User
 
@@ -71,6 +74,30 @@ async def my_transaction_history(
         limit=limit,
     )
     return TransactionHistoryResponse(items=items, total=total)
+
+
+# --- Admin: update payment status (triggers Payment Confirmed notification) ---
+@router.patch(
+    "/{payment_id}/status",
+    response_model=TransactionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Update payment status (admin)",
+    description="Admin updates payment status to completed or failed. Sends 'Payment Confirmed' notification when set to completed.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def update_payment_status(
+    payment_id: UUID,
+    data: UpdatePaymentStatusRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update payment status; sends payment_confirmed notification when status is completed."""
+    service = PaymentService(db)
+    updated = await service.update_payment_status_admin(payment_id=payment_id, status=data.status)
+    if not updated:
+        AppException().raise_404("Payment not found")
+    return updated
 
 
 # --- Transaction History (admin) ---

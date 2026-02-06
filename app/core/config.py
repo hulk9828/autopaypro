@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_CURRENCY: str = "usd"
 
+    # Payment notification cron (env: CRON_PAYMENT_NOTIFICATION_INTERVAL_HOURS, OVERDUE_DAYS_FOR_NOTIFICATION)
+    CRON_PAYMENT_NOTIFICATION_INTERVAL_HOURS: float = Field(default=1.0, description="Cron run interval in hours")
+    OVERDUE_DAYS_FOR_NOTIFICATION: int = Field(default=7, description="Consider payment overdue after this many days past due")
+
     class Config:
         extra = "ignore"
         env_file = str(ENV_PATH)

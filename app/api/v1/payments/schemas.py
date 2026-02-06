@@ -51,6 +51,12 @@ class MakePaymentResponse(BaseModel):
     transaction: TransactionItem | None = Field(None, description="Created transaction when success=True")
 
 
+# --- Admin: update payment status ---
+class UpdatePaymentStatusRequest(BaseModel):
+    """Admin updates payment status (e.g. to confirmed/completed)."""
+    status: Literal["completed", "failed"] = Field(..., description="Payment status")
+
+
 # --- Transaction History (user) ---
 class TransactionHistoryResponse(BaseModel):
     """Paginated transaction history."""

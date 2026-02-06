@@ -49,6 +49,7 @@ from app.models.admin import Admin  # admin
 from app.models.loan import Loan  # noqa
 from app.models.content import Content  # noqa
 from app.models.payment import Payment  # noqa
+from app.models.payment_notification_log import PaymentNotificationLog  # noqa
 
 
 target_metadata = Base.metadata

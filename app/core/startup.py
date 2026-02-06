@@ -27,6 +27,17 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 """
 
+PAYMENT_NOTIFICATION_LOGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS payment_notification_logs (
+    id UUID NOT NULL PRIMARY KEY,
+    notification_type VARCHAR(50) NOT NULL,
+    scope_key VARCHAR(255) NOT NULL,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    sent_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    CONSTRAINT uq_notification_type_scope_key UNIQUE (notification_type, scope_key)
+);
+"""
+
 
 async def ensure_payments_table():
     """Create payments table if it does not exist (so app works even if migrations weren't run)."""
@@ -38,6 +49,18 @@ async def ensure_payments_table():
             logger.info("Payments table ensured.")
     except Exception as e:
         logger.warning("Could not ensure payments table (it may already exist or DB not ready): %s", e)
+
+
+async def ensure_payment_notification_logs_table():
+    """Create payment_notification_logs table if it does not exist."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(text(PAYMENT_NOTIFICATION_LOGS_TABLE_SQL))
+            await session.commit()
+            logger.info("Payment notification logs table ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure payment_notification_logs table: %s", e)
 
 
 async def ensure_admins_table_exists(session):

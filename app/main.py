@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -57,7 +58,11 @@ app.include_router(api_router, prefix="/api/v1")
 if STATIC_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
-from app.core.startup import ensure_default_admin, ensure_payments_table
+from app.core.startup import (
+    ensure_default_admin,
+    ensure_payment_notification_logs_table,
+    ensure_payments_table,
+)
 
 
 @app.on_event("startup")
@@ -65,15 +70,25 @@ async def startup_event():
     """Application startup event."""
     # Ensure payments table exists (create if missing)
     await ensure_payments_table()
+    await ensure_payment_notification_logs_table()
     # Ensure default admin exists
     await ensure_default_admin()
-
+    # Start payment notification cron (non-blocking)
+    from app.core.cron_runner import run_payment_notification_cron_loop
+    task = asyncio.create_task(run_payment_notification_cron_loop())
+    app.state.payment_notification_cron_task = task
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown event."""
-    pass
+    task = getattr(app.state, "payment_notification_cron_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # expected on cancel
 
 
 @app.exception_handler(Exception)
