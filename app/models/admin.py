@@ -20,5 +20,6 @@ class Admin(Base):
     role = Column(String, default=Role.admin.value, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     profile_pic = Column(String, nullable=True)
+    device_token = Column(String, nullable=True)  # For push notifications
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

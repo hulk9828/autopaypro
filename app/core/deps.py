@@ -124,3 +124,20 @@ async def get_current_customer(
         AppException().raise_403("Customer account is inactive. Please contact support.")
     
     return customer
+
+
+async def get_jwt_payload(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    """Decode JWT and return payload (sub, role). Used by common endpoints (e.g. device-token)."""
+    if credentials is None or not credentials.credentials:
+        AppException().raise_401("Not authenticated. Please provide a bearer token.")
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    if payload is None:
+        AppException().raise_401("Invalid or expired token. Please login again.")
+    sub = payload.get("sub")
+    role = payload.get("role")
+    if not sub:
+        AppException().raise_401("Token missing subject. Please login again.")
+    return {"sub": sub, "role": role or ""}

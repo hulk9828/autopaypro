@@ -26,6 +26,7 @@ class Customer(Base):
     account_status = Column(String, default=AccountStatus.active.value, nullable=False)
     otp_code = Column(String, nullable=True)
     otp_expires_at = Column(DateTime, nullable=True)
+    device_token = Column(String, nullable=True)  # For push notifications
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

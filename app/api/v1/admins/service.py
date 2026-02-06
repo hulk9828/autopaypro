@@ -45,6 +45,14 @@ class AdminService:
             return None
         return admin
 
+    async def update_device_token(self, admin_id: UUID, device_token: str) -> None:
+        """Update device token for push notifications."""
+        admin = await self.get_admin_by_id(admin_id)
+        if admin:
+            admin.device_token = device_token or None
+            self.db.add(admin)
+            await self.db.commit()
+
     async def get_admin_profile(self, admin_id: UUID) -> Optional[Admin]:
         """Get admin by ID for profile (same as get_admin_by_id)."""
         return await self.get_admin_by_id(admin_id)
@@ -66,6 +74,8 @@ class AdminService:
                 admin.phone = data.phone.strip()
         if data.profile_pic is not None:
             admin.profile_pic = data.profile_pic.strip() or None
+        if data.device_token is not None:
+            admin.device_token = data.device_token.strip() or None
         self.db.add(admin)
         await self.db.commit()
         await self.db.refresh(admin)

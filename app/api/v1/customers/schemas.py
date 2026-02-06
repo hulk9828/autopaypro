@@ -1,6 +1,8 @@
+from __future__ import annotations
+
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -63,6 +65,7 @@ class CustomerProfileResponse(BaseModel):
     employer_name: Optional[str] = None
     profile_pic: Optional[str] = None
     account_status: str
+    device_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -80,11 +83,13 @@ class CustomerProfileUpdate(BaseModel):
     driver_license_number: Optional[str] = None
     employer_name: Optional[str] = None
     profile_pic: Optional[str] = None
+    device_token: Optional[str] = None
 
 
 class CustomerLogin(BaseModel):
     email: str
     password: str
+    device_token: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):

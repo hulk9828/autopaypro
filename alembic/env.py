@@ -48,6 +48,8 @@ from app.models.customer_vehicle import CustomerVehicle  # noqa
 from app.models.admin import Admin  # admin
 from app.models.loan import Loan  # noqa
 from app.models.content import Content  # noqa
+from app.models.payment import Payment  # noqa
+
 
 target_metadata = Base.metadata
 

@@ -16,6 +16,11 @@ class PaymentMethod(str, Enum):
     check = "check"
 
 
+class PaymentStatus(str, Enum):
+    completed = "completed"
+    failed = "failed"
+
+
 class Payment(Base):
     __tablename__ = "payments"
 
@@ -26,6 +31,7 @@ class Payment(Base):
     payment_method = Column(String, nullable=False)
     payment_date = Column(DateTime, default=datetime.utcnow, nullable=False)
     due_date = Column(DateTime, nullable=False)  # The due date this payment was for
+    status = Column(String(20), default=PaymentStatus.completed.value, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

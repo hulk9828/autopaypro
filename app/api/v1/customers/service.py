@@ -619,6 +619,14 @@ class CustomerService:
             await self.db.refresh(customer)
         return customer
 
+    async def update_device_token(self, customer_id: uuid.UUID, device_token: str) -> None:
+        """Update device token for push notifications."""
+        customer = await self.get_customer_by_id(customer_id)
+        if customer:
+            customer.device_token = device_token or None
+            self.db.add(customer)
+            await self.db.commit()
+
     async def update_customer_profile(self, customer: Customer, data: CustomerProfileUpdate) -> Customer:
         """Update customer profile. Validates uniqueness for email, phone, driver_license_number."""
         if data.first_name is not None:
@@ -660,6 +668,8 @@ class CustomerService:
             customer.employer_name = data.employer_name.strip() or None
         if data.profile_pic is not None:
             customer.profile_pic = data.profile_pic.strip() or None
+        if data.device_token is not None:
+            customer.device_token = data.device_token.strip() or None
         self.db.add(customer)
         await self.db.commit()
         await self.db.refresh(customer)

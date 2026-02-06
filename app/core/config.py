@@ -34,8 +34,15 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str = ""
     S3_CUSTOMER_PROFILE_PREFIX: str = "customer-profiles"
 
+    # Stripe – from .env: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_CURRENCY
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_PUBLISHABLE_KEY: str = ""
+    STRIPE_CURRENCY: str = "usd"
+
     class Config:
         extra = "ignore"
+        env_file = str(ENV_PATH)
+        env_file_encoding = "utf-8"
 
 
 settings = Settings()

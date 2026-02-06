@@ -1,6 +1,8 @@
+from __future__ import annotations
+
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
-from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -32,6 +34,7 @@ class AdminProfileResponse(BaseModel):
     profile_pic: Optional[str] = None
     role: str
     is_active: bool
+    device_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -40,10 +43,11 @@ class AdminProfileResponse(BaseModel):
 
 
 class AdminProfileUpdate(BaseModel):
-    """Update admin profile (email, phone, profile_pic)."""
+    """Update admin profile (email, phone, profile_pic, device_token)."""
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     profile_pic: Optional[str] = None
+    device_token: Optional[str] = None
 
 
 class AdminChangePassword(BaseModel):
@@ -70,3 +74,4 @@ class AdminResponse(AdminBase):
 class AdminLogin(BaseModel):
     email: EmailStr
     password: str
+    device_token: Optional[str] = None

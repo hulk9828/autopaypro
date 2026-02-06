@@ -47,6 +47,9 @@ async def admin_login(
     admin = await admin_service.authenticate_admin(admin_login_data)
     if not admin:
         AppException().raise_401("Incorrect email or password")
+    if admin_login_data.device_token is not None and admin_login_data.device_token.strip():
+        await admin_service.update_device_token(admin.id, admin_login_data.device_token.strip())
+        await db.refresh(admin)
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={

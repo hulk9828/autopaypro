@@ -213,6 +213,10 @@ async def customer_login(
     if not customer:
         AppException().raise_401("Incorrect email or password, or account is inactive")
     
+    if customer_login_data.device_token is not None and customer_login_data.device_token.strip():
+        await customer_service.update_device_token(customer.id, customer_login_data.device_token.strip())
+        await db.refresh(customer)
+    
     # Create access token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(

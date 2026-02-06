@@ -14,6 +14,18 @@
 -- Ensure app user can use the schema
 GRANT USAGE ON SCHEMA public TO payment_user;
 
+-- Give ownership of all tables to payment_user so Alembic migrations can run
+-- (ALTER TABLE requires table ownership; otherwise: "must be owner of table X")
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
+  LOOP
+    EXECUTE format('ALTER TABLE %I OWNER TO payment_user', r.tablename);
+  END LOOP;
+END $$;
+
 -- Grant full DML on all existing tables in public
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO payment_user;
 
