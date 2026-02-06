@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from typing import Optional
 from uuid import UUID
@@ -5,9 +6,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+logger = logging.getLogger(__name__)
+
 from app.api.v1.payments.schemas import (
     MakePaymentRequest,
     MakePaymentResponse,
+    OverduePaymentsResponse,
     TransactionHistoryResponse,
     TransactionItem,
     UpdatePaymentStatusRequest,
@@ -36,6 +40,17 @@ async def make_payment(
     db: AsyncSession = Depends(get_db),
 ):
     """Accepts card_token, processes payment for next or due amount, updates payment status."""
+    # Log request parameters (mask card_token for security)
+    logger.info(f"data: {data}")
+    
+    card_preview = f"{data.card_token[:20]}...({len(data.card_token)} chars)" if len(data.card_token) > 20 else "***"
+    logger.info(
+        "POST /payments/ request: loan_id=%s payment_type=%s due_date_iso=%s card_token=%s",
+        data.loan_id,
+        data.payment_type,
+        data.due_date_iso,
+        card_preview,
+    )
     service = PaymentService(db)
     result = await service.make_payment(
         customer_id=current_customer.id,
@@ -98,6 +113,36 @@ async def update_payment_status(
     if not updated:
         AppException().raise_404("Payment not found")
     return updated
+
+
+# --- Admin: Overdue payments ---
+@router.get(
+    "/overdue",
+    response_model=OverduePaymentsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Overdue payments (admin)",
+    description="List overdue installments with total count, total outstanding amount, and average overdue days.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def overdue_payments(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Returns list of overdue installments, total overdue count, total outstanding amount, avg overdue days."""
+    service = PaymentService(db)
+    items, total_count, total_outstanding, avg_days = await service.list_overdue_for_admin(
+        skip=skip,
+        limit=limit,
+    )
+    return OverduePaymentsResponse(
+        items=items,
+        total_overdue_payments=total_count,
+        total_outstanding_amount=round(total_outstanding, 2),
+        avg_overdue_days=round(avg_days, 2),
+    )
 
 
 # --- Transaction History (admin) ---

@@ -4,14 +4,14 @@ from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.payments.schemas import TransactionItem
+from app.api.v1.payments.schemas import OverdueItem, TransactionItem
 from app.core.config import settings
 from app.core.exceptions import AppException
 from app.core.notification_service import scope_key_for_payment, send_payment_notification
 from app.core.stripe_client import create_payment_intent, confirm_payment_intent_with_token
 from app.models.customer import Customer
 from app.models.loan import Loan
-from app.models.payment import Payment
+from app.models.payment import Payment, PaymentStatus
 from app.models.vehicle import Vehicle
 
 
@@ -54,6 +54,16 @@ class PaymentService:
         """Set of (due_date as date) already paid for this loan."""
         result = await self.db.execute(
             select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan_id)
+        )
+        return {r.d for r in result.all()}
+
+    async def _get_paid_due_dates_for_loan_completed(self, loan_id: UUID) -> set[date]:
+        """Set of (due_date as date) with a completed payment for this loan."""
+        result = await self.db.execute(
+            select(func.date(Payment.due_date).label("d")).where(
+                Payment.loan_id == loan_id,
+                Payment.status == PaymentStatus.completed.value,
+            )
         )
         return {r.d for r in result.all()}
 
@@ -117,6 +127,7 @@ class PaymentService:
         Process payment via card token for next or due amount.
         Returns dict with success, message, transaction (TransactionItem or None).
         """
+        print(f"{customer_id} {loan_id} {card_token} {payment_type} {due_date_iso}")
         if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
             AppException().raise_400("Stripe is not configured")
 
@@ -166,6 +177,12 @@ class PaymentService:
             )
             pi = confirm_payment_intent_with_token(result["payment_intent_id"], card_token)
         except Exception as e:
+            err_msg = str(e).strip().lower()
+            if "no such paymentmethod" in err_msg or "_secret_" in err_msg:
+                AppException().raise_400(
+                    "Invalid card_token: send a PaymentMethod ID (pm_xxx) or token (tok_xxx) from the client. "
+                    "Do not send the PaymentIntent client_secret (pi_xxx_secret_xxx)."
+                )
             AppException().raise_400(f"Payment failed: {e}")
 
         if pi.status != "succeeded":
@@ -336,6 +353,59 @@ class PaymentService:
                 )
             )
         return items, total
+
+    async def list_overdue_for_admin(
+        self,
+        skip: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[OverdueItem], int, float, float]:
+        """
+        List overdue installments (scheduled due dates in the past with no completed payment).
+        Returns (items_page, total_overdue_count, total_outstanding_amount, avg_overdue_days).
+        """
+        today = date.today()
+        loans_result = await self.db.execute(
+            select(Loan, Customer, Vehicle)
+            .join(Customer, Loan.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+        )
+        all_items: list[OverdueItem] = []
+        for loan, customer, vehicle in loans_result.all():
+            # Due dates from loan start up to (and including) yesterday
+            from_date = (loan.created_at + timedelta(days=14)).date()
+            to_date = today
+            due_dates = _get_bi_weekly_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                from_date,
+                to_date,
+            )
+            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            for due_dt in due_dates:
+                due_d = due_dt.date()
+                if due_d >= today or due_d in paid_completed:
+                    continue
+                days_overdue = (today - due_d).days
+                all_items.append(
+                    OverdueItem(
+                        loan_id=loan.id,
+                        customer_id=loan.customer_id,
+                        customer_name=customer_name,
+                        vehicle_display=vehicle_display,
+                        due_date=due_dt,
+                        amount=loan.bi_weekly_payment_amount,
+                        days_overdue=days_overdue,
+                    )
+                )
+        # Sort by due_date ascending (oldest overdue first) or by days_overdue desc
+        all_items.sort(key=lambda x: (x.due_date, x.loan_id))
+        total_count = len(all_items)
+        total_outstanding = sum(i.amount for i in all_items)
+        avg_days = (sum(i.days_overdue for i in all_items) / total_count) if total_count else 0.0
+        page = all_items[skip : skip + limit]
+        return (page, total_count, total_outstanding, avg_days)
 
     async def update_payment_status_admin(
         self,

@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,7 +105,7 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
         status_code=422,
         content={
             "message": "Validation error",
-            "errors": exc.errors(),
+            "errors": _serializable_validation_errors(exc.errors()),
         },
     )
 
@@ -111,12 +114,30 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
 
+def _serializable_validation_errors(errors: list) -> list:
+    """Convert validation error dicts to JSON-serializable form (e.g. ctx may contain Exception)."""
+    out = []
+    for e in errors:
+        item = {"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")}
+        if "ctx" in e and e["ctx"]:
+            item["ctx"] = {k: str(v) for k, v in e["ctx"].items()}
+        out.append(item)
+    return out
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors_serializable = _serializable_validation_errors(exc.errors())
+    logger.info(
+        "Validation error 422: method=%s path=%s errors=%s",
+        request.method,
+        request.url.path,
+        errors_serializable,
+    )
     return JSONResponse(
         status_code=422,
         content={
             "message": "Validation error",
-            "errors": exc.errors(),
+            "errors": errors_serializable,
         },
     )

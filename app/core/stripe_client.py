@@ -33,7 +33,10 @@ def create_payment_intent(
     intent = stripe.PaymentIntent.create(
         amount=amount_cents,
         currency=currency or settings.STRIPE_CURRENCY,
-        automatic_payment_methods={"enabled": True},
+        automatic_payment_methods={
+            "enabled": True,
+            "allow_redirects": "never",  # Card only; no redirect (e.g. iDEAL) so return_url not required
+        },
         metadata={
             "loan_id": str(loan_id),
             "customer_id": str(customer_id),
