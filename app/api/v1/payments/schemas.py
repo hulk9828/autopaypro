@@ -78,6 +78,17 @@ class TransactionHistoryResponse(BaseModel):
     total: int = Field(..., description="Total count of transactions (for pagination)")
 
 
+# --- Admin: Transaction History with summary ---
+class AdminTransactionHistoryResponse(BaseModel):
+    """Admin transaction history with list and summary stats for dashboard."""
+    items: list[TransactionItem] = Field(default_factory=list)
+    total: int = Field(..., description="Total count of transactions (for pagination)")
+    total_amount: float = Field(..., description="Sum of all transaction amounts (with same filters)")
+    completed_count: int = Field(..., description="Number of transactions with status completed")
+    pending_count: int = Field(0, description="Number of transactions pending (0 if not used)")
+    failed_count: int = Field(..., description="Number of transactions with status failed")
+
+
 # --- Admin: Overdue payments ---
 class OverdueItem(BaseModel):
     """Single overdue installment (scheduled due date with no completed payment)."""
@@ -91,11 +102,11 @@ class OverdueItem(BaseModel):
 
 
 class OverduePaymentsResponse(BaseModel):
-    """Admin view: list of overdue installments plus totals and average overdue days."""
-    items: list[OverdueItem] = Field(default_factory=list, description="Overdue installments (optionally paginated)")
-    total_overdue_payments: int = Field(..., description="Total count of overdue installments")
-    total_outstanding_amount: float = Field(..., description="Sum of amounts for all overdue installments")
-    avg_overdue_days: float = Field(..., description="Average days past due across overdue installments")
+    """Overdue Accounts: list of overdue installments, count, total amount, and average overdue days."""
+    items: list[OverdueItem] = Field(default_factory=list, description="List of overdue payment installments")
+    total_overdue_payments: int = Field(..., description="Overdue payment count")
+    total_outstanding_amount: float = Field(..., description="Total overdue amount")
+    avg_overdue_days: float = Field(..., description="Average overdue days (avg days past due)")
 
 
 # --- Notifications (payment notification log) ---

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 from app.api.v1.payments.schemas import (
+    AdminTransactionHistoryResponse,
     MakePaymentRequest,
     MakePaymentResponse,
     NotificationListResponse,
@@ -70,17 +71,17 @@ async def make_payment(
     "/my-notifications",
     response_model=NotificationListResponse,
     status_code=status.HTTP_200_OK,
-    summary="My notifications",
-    description="List payment notifications for the logged-in customer (payment received, confirmed, due tomorrow, overdue).",
+    summary="Get all notifications (customer)",
+    description="Returns all notifications for the logged-in customer (payment received, confirmed, due tomorrow, overdue). Use skip/limit for pagination.",
     tags=["payments"],
 )
 async def my_notifications(
     current_customer: Customer = Depends(get_current_customer),
     db: AsyncSession = Depends(get_db),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=2000),
 ):
-    """Paginated list of notifications for the current customer."""
+    """Get all notifications of the customer."""
     service = PaymentService(db)
     items, total = await service.list_notifications_for_customer(
         customer_id=current_customer.id,
@@ -139,13 +140,13 @@ async def update_payment_status(
     return updated
 
 
-# --- Admin: Overdue payments ---
+# --- Admin: Overdue Accounts ---
 @router.get(
     "/overdue",
     response_model=OverduePaymentsResponse,
     status_code=status.HTTP_200_OK,
-    summary="Overdue payments (admin)",
-    description="List overdue installments with total count, total outstanding amount, and average overdue days.",
+    summary="Overdue accounts (admin)",
+    description="Overdue Accounts: list of overdue installments, overdue payment count, total overdue amount, and average overdue days.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -155,7 +156,7 @@ async def overdue_payments(
     skip: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
 ):
-    """Returns list of overdue installments, total overdue count, total outstanding amount, avg overdue days."""
+    """Overdue Accounts: list of overdue installments plus total count, total overdue amount, avg overdue days."""
     service = PaymentService(db)
     items, total_count, total_outstanding, avg_days = await service.list_overdue_for_admin(
         skip=skip,
@@ -174,8 +175,8 @@ async def overdue_payments(
     "/notifications",
     response_model=NotificationListResponse,
     status_code=status.HTTP_200_OK,
-    summary="All notifications (admin)",
-    description="List payment notifications for all customers, with optional customer_id filter.",
+    summary="Get all notifications (admin)",
+    description="Returns all notifications (all customers). Optionally filter by customer_id. Use skip/limit for pagination.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -184,9 +185,9 @@ async def admin_notifications(
     db: AsyncSession = Depends(get_db),
     customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=2000),
 ):
-    """Paginated list of notifications; admin sees all or filtered by customer."""
+    """Get all notifications; admin sees all (or filtered by customer)."""
     service = PaymentService(db)
     items, total = await service.list_notifications_admin(
         customer_id=customer_id,
@@ -199,10 +200,10 @@ async def admin_notifications(
 # --- Transaction History (admin) ---
 @router.get(
     "/transactions",
-    response_model=TransactionHistoryResponse,
+    response_model=AdminTransactionHistoryResponse,
     status_code=status.HTTP_200_OK,
     summary="All transactions (admin)",
-    description="Returns transaction history for all users with optional filters.",
+    description="Returns transaction history with summary: total, total_amount, completed_count, pending_count, failed_count.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -216,9 +217,9 @@ async def admin_transaction_history(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
 ):
-    """Paginated transaction history with filters."""
+    """Paginated transaction history with summary stats for dashboard (Total, $amount, Completed, Pending, Failed)."""
     service = PaymentService(db)
-    items, total = await service.list_transactions_admin(
+    items, total, total_amount, completed_count, failed_count = await service.list_transactions_admin(
         customer_id=customer_id,
         loan_id=loan_id,
         from_date=from_date,
@@ -226,4 +227,11 @@ async def admin_transaction_history(
         skip=skip,
         limit=limit,
     )
-    return TransactionHistoryResponse(items=items, total=total)
+    return AdminTransactionHistoryResponse(
+        items=items,
+        total=total,
+        total_amount=round(total_amount, 2),
+        completed_count=completed_count,
+        pending_count=0,
+        failed_count=failed_count,
+    )

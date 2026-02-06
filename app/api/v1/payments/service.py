@@ -221,7 +221,7 @@ class PaymentService:
                 due_date=payment.due_date,
                 created_at=payment.created_at,
             )
-            # Event-based: Payment Received notification
+            # When customer makes payment: save his notification (push + log) so he can get it via GET my-notifications
             await send_payment_notification(
                 self.db,
                 customer_id=customer_id,
@@ -315,8 +315,8 @@ class PaymentService:
         to_date: date | None = None,
         skip: int = 0,
         limit: int = 100,
-    ) -> tuple[list[TransactionItem], int]:
-        """Transaction history for all users with filters. Returns (items, total)."""
+    ) -> tuple[list[TransactionItem], int, float, int, int]:
+        """Transaction history for all users with filters. Returns (items, total, total_amount, completed_count, failed_count)."""
         base = (
             select(Payment, Customer, Vehicle)
             .join(Loan, Payment.loan_id == Loan.id)
@@ -325,21 +325,43 @@ class PaymentService:
             .order_by(Payment.payment_date.desc())
         )
         count_q = select(func.count(Payment.id))
+        sum_q = select(func.coalesce(func.sum(Payment.amount), 0))
+        completed_q = select(func.count(Payment.id)).where(Payment.status == PaymentStatus.completed.value)
+        failed_q = select(func.count(Payment.id)).where(Payment.status == "failed")
         if customer_id is not None:
             base = base.where(Payment.customer_id == customer_id)
             count_q = count_q.where(Payment.customer_id == customer_id)
+            sum_q = sum_q.where(Payment.customer_id == customer_id)
+            completed_q = completed_q.where(Payment.customer_id == customer_id)
+            failed_q = failed_q.where(Payment.customer_id == customer_id)
         if loan_id is not None:
             base = base.where(Payment.loan_id == loan_id)
             count_q = count_q.where(Payment.loan_id == loan_id)
+            sum_q = sum_q.where(Payment.loan_id == loan_id)
+            completed_q = completed_q.where(Payment.loan_id == loan_id)
+            failed_q = failed_q.where(Payment.loan_id == loan_id)
         if from_date is not None:
             base = base.where(func.date(Payment.payment_date) >= from_date)
             count_q = count_q.where(func.date(Payment.payment_date) >= from_date)
+            sum_q = sum_q.where(func.date(Payment.payment_date) >= from_date)
+            completed_q = completed_q.where(func.date(Payment.payment_date) >= from_date)
+            failed_q = failed_q.where(func.date(Payment.payment_date) >= from_date)
         if to_date is not None:
             base = base.where(func.date(Payment.payment_date) <= to_date)
             count_q = count_q.where(func.date(Payment.payment_date) <= to_date)
+            sum_q = sum_q.where(func.date(Payment.payment_date) <= to_date)
+            completed_q = completed_q.where(func.date(Payment.payment_date) <= to_date)
+            failed_q = failed_q.where(func.date(Payment.payment_date) <= to_date)
 
         total_result = await self.db.execute(count_q)
         total = total_result.scalar_one() or 0
+        sum_result = await self.db.execute(sum_q)
+        total_amount = float(sum_result.scalar_one() or 0)
+        completed_result = await self.db.execute(completed_q)
+        completed_count = completed_result.scalar_one() or 0
+        failed_result = await self.db.execute(failed_q)
+        failed_count = failed_result.scalar_one() or 0
+
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for p, c, v in result.all():
@@ -358,7 +380,7 @@ class PaymentService:
                     created_at=p.created_at,
                 )
             )
-        return items, total
+        return items, total, total_amount, completed_count, failed_count
 
     async def list_overdue_for_admin(
         self,
