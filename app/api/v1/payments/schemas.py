@@ -96,3 +96,29 @@ class OverduePaymentsResponse(BaseModel):
     total_overdue_payments: int = Field(..., description="Total count of overdue installments")
     total_outstanding_amount: float = Field(..., description="Sum of amounts for all overdue installments")
     avg_overdue_days: float = Field(..., description="Average days past due across overdue installments")
+
+
+# --- Notifications (payment notification log) ---
+NOTIFICATION_TYPE_DISPLAY = {
+    "payment_received": ("Payment received", "Your payment has been received."),
+    "payment_confirmed": ("Payment confirmed", "Your payment has been confirmed."),
+    "due_tomorrow": ("Payment due tomorrow", "A payment is due tomorrow."),
+    "overdue": ("Payment overdue", "You have an overdue payment."),
+}
+
+
+class NotificationItem(BaseModel):
+    """Single notification record for a customer."""
+    id: UUID
+    notification_type: str = Field(..., description="payment_received | payment_confirmed | due_tomorrow | overdue")
+    title: str = Field(..., description="Display title")
+    body: str = Field(..., description="Display body")
+    sent_at: datetime = Field(..., description="When the notification was sent")
+    customer_id: UUID | None = Field(None, description="Present only in admin list")
+    customer_name: str | None = Field(None, description="Present only in admin list")
+
+
+class NotificationListResponse(BaseModel):
+    """Paginated list of notifications."""
+    items: list[NotificationItem] = Field(default_factory=list)
+    total: int = Field(..., description="Total count for pagination")

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from app.api.v1.payments.schemas import (
     MakePaymentRequest,
     MakePaymentResponse,
+    NotificationListResponse,
     OverduePaymentsResponse,
     TransactionHistoryResponse,
     TransactionItem,
@@ -41,8 +42,6 @@ async def make_payment(
 ):
     """Accepts card_token, processes payment for next or due amount, updates payment status."""
     # Log request parameters (mask card_token for security)
-    logger.info(f"data: {data}")
-    
     card_preview = f"{data.card_token[:20]}...({len(data.card_token)} chars)" if len(data.card_token) > 20 else "***"
     logger.info(
         "POST /payments/ request: loan_id=%s payment_type=%s due_date_iso=%s card_token=%s",
@@ -64,6 +63,31 @@ async def make_payment(
         message=result["message"],
         transaction=result.get("transaction"),
     )
+
+
+# --- Notifications (customer) ---
+@router.get(
+    "/my-notifications",
+    response_model=NotificationListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="My notifications",
+    description="List payment notifications for the logged-in customer (payment received, confirmed, due tomorrow, overdue).",
+    tags=["payments"],
+)
+async def my_notifications(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Paginated list of notifications for the current customer."""
+    service = PaymentService(db)
+    items, total = await service.list_notifications_for_customer(
+        customer_id=current_customer.id,
+        skip=skip,
+        limit=limit,
+    )
+    return NotificationListResponse(items=items, total=total)
 
 
 # --- Transaction History (user) ---
@@ -143,6 +167,33 @@ async def overdue_payments(
         total_outstanding_amount=round(total_outstanding, 2),
         avg_overdue_days=round(avg_days, 2),
     )
+
+
+# --- Notifications (admin) ---
+@router.get(
+    "/notifications",
+    response_model=NotificationListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="All notifications (admin)",
+    description="List payment notifications for all customers, with optional customer_id filter.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def admin_notifications(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Paginated list of notifications; admin sees all or filtered by customer."""
+    service = PaymentService(db)
+    items, total = await service.list_notifications_admin(
+        customer_id=customer_id,
+        skip=skip,
+        limit=limit,
+    )
+    return NotificationListResponse(items=items, total=total)
 
 
 # --- Transaction History (admin) ---

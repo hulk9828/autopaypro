@@ -4,7 +4,12 @@ from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.payments.schemas import OverdueItem, TransactionItem
+from app.api.v1.payments.schemas import (
+    NOTIFICATION_TYPE_DISPLAY,
+    NotificationItem,
+    OverdueItem,
+    TransactionItem,
+)
 from app.core.config import settings
 from app.core.exceptions import AppException
 from app.core.notification_service import scope_key_for_payment, send_payment_notification
@@ -12,6 +17,7 @@ from app.core.stripe_client import create_payment_intent, confirm_payment_intent
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment, PaymentStatus
+from app.models.payment_notification_log import PaymentNotificationLog
 from app.models.vehicle import Vehicle
 
 
@@ -447,3 +453,81 @@ class PaymentService:
             due_date=payment.due_date,
             created_at=payment.created_at,
         )
+
+    def _notification_display(self, notification_type: str) -> tuple[str, str]:
+        """Return (title, body) for a notification type."""
+        return NOTIFICATION_TYPE_DISPLAY.get(
+            notification_type,
+            (notification_type.replace("_", " ").title(), "Notification sent."),
+        )
+
+    async def list_notifications_for_customer(
+        self,
+        customer_id: UUID,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[NotificationItem], int]:
+        """List payment notifications for a customer. Returns (items, total)."""
+        base = (
+            select(PaymentNotificationLog)
+            .where(PaymentNotificationLog.customer_id == customer_id)
+            .order_by(PaymentNotificationLog.sent_at.desc())
+        )
+        total_result = await self.db.execute(
+            select(func.count(PaymentNotificationLog.id)).where(
+                PaymentNotificationLog.customer_id == customer_id
+            )
+        )
+        total = total_result.scalar_one() or 0
+        result = await self.db.execute(base.offset(skip).limit(limit))
+        items = []
+        for log in result.scalars().all():
+            title, body = self._notification_display(log.notification_type)
+            items.append(
+                NotificationItem(
+                    id=log.id,
+                    notification_type=log.notification_type,
+                    title=title,
+                    body=body,
+                    sent_at=log.sent_at,
+                    customer_id=None,
+                    customer_name=None,
+                )
+            )
+        return items, total
+
+    async def list_notifications_admin(
+        self,
+        customer_id: UUID | None = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[NotificationItem], int]:
+        """List payment notifications for admin (all or filtered by customer_id). Returns (items, total)."""
+        base = (
+            select(PaymentNotificationLog, Customer)
+            .join(Customer, PaymentNotificationLog.customer_id == Customer.id)
+            .order_by(PaymentNotificationLog.sent_at.desc())
+        )
+        count_q = select(func.count(PaymentNotificationLog.id))
+        if customer_id is not None:
+            base = base.where(PaymentNotificationLog.customer_id == customer_id)
+            count_q = count_q.where(PaymentNotificationLog.customer_id == customer_id)
+        total_result = await self.db.execute(count_q)
+        total = total_result.scalar_one() or 0
+        result = await self.db.execute(base.offset(skip).limit(limit))
+        items = []
+        for log, customer in result.all():
+            title, body = self._notification_display(log.notification_type)
+            customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+            items.append(
+                NotificationItem(
+                    id=log.id,
+                    notification_type=log.notification_type,
+                    title=title,
+                    body=body,
+                    sent_at=log.sent_at,
+                    customer_id=log.customer_id,
+                    customer_name=customer_name,
+                )
+            )
+        return items, total
