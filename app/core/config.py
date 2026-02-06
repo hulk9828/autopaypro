@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     CRON_PAYMENT_NOTIFICATION_INTERVAL_HOURS: float = Field(default=1.0, description="Cron run interval in hours")
     OVERDUE_DAYS_FOR_NOTIFICATION: int = Field(default=7, description="Consider payment overdue after this many days past due")
 
+    # Firebase Cloud Messaging (push notifications). Optional; leave empty to disable.
+    FIREBASE_CREDENTIALS_PATH: str = Field(default="", description="Path to Firebase service account JSON file")
+    FIREBASE_CREDENTIALS_JSON: str = Field(default="", description="Alternatively: raw JSON string of service account (e.g. from env)")
+
     class Config:
         extra = "ignore"
         env_file = str(ENV_PATH)

@@ -124,6 +124,29 @@ The app runs on **port 8218**. Access the health check endpoint:
 
 This should return: `{ "status": "ok" }`.
 
+### 6. Firebase (Push Notifications)
+
+Push notifications (payment due, overdue, payment received, payment confirmed) are sent via **Firebase Cloud Messaging (FCM)** when configured.
+
+1. **Create a Firebase project** at [Firebase Console](https://console.firebase.google.com/), enable **Cloud Messaging**.
+2. **Service account:** Project Settings → Service accounts → Generate new private key. Save the JSON file securely.
+3. **Configure the app** (one of the following):
+
+   - **Option A – File path** (e.g. local or Docker volume):
+     ```env
+     FIREBASE_CREDENTIALS_PATH=/path/to/your-firebase-service-account.json
+     ```
+   - **Option B – JSON in env** (e.g. serverless):
+     ```env
+     FIREBASE_CREDENTIALS_JSON='{"type":"service_account",...}'
+     ```
+
+4. **Device tokens:** Customers and admins set their FCM device token via:
+   - Login request body: `device_token` (optional), or
+   - `PATCH /api/v1/auth/device-token` with Bearer token and body `{ "device_token": "..." }`.
+
+If `FIREBASE_CREDENTIALS_PATH` and `FIREBASE_CREDENTIALS_JSON` are both empty, notifications are still logged for duplicate prevention but no push is sent.
+
 ---
 
 ## Accessing the app from outside the server

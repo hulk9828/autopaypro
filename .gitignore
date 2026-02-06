@@ -12,8 +12,14 @@ virtualenv/env/
 
 # Environment variables
 .env
-env/    
+env/
 .env.*
+
+# Firebase (do not commit service account keys)
+*firebase*credentials*.json
+*service*account*.json
+# Allow the demo template to be committed
+!firebase-credentials-demo.json
 
 # Docker
 .dockerignore

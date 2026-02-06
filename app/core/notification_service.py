@@ -1,13 +1,16 @@
 """
 Payment notification service: send push notifications and prevent duplicates.
 Uses PaymentNotificationLog for duplicate prevention (notification_type + scope_key).
+Sends via Firebase Cloud Messaging when configured.
 """
+import asyncio
 import logging
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.firebase_client import is_firebase_available, send_fcm_message
 from app.models.customer import Customer
 from app.models.payment_notification_log import PaymentNotificationLog
 
@@ -52,13 +55,24 @@ async def send_payment_notification(
 
     device_token = (customer.device_token or "").strip()
     if device_token:
-        # Push notification: log and optionally call FCM/APNs.
-        # Placeholder: in production integrate Firebase Admin SDK or similar.
-        logger.info(
-            "Payment notification: type=%s customer_id=%s title=%s (device_token present)",
-            notification_type, customer_id, title,
-        )
-        # TODO: call push provider, e.g. firebase_admin.messaging.send()
+        if is_firebase_available():
+            data = {"type": notification_type, "scope_key": scope_key}
+            sent = await asyncio.to_thread(
+                send_fcm_message,
+                device_token,
+                title,
+                body,
+                data,
+            )
+            if sent:
+                logger.info("Payment notification sent via FCM: type=%s customer_id=%s", notification_type, customer_id)
+            else:
+                logger.warning("FCM send failed for customer %s (type=%s)", customer_id, notification_type)
+        else:
+            logger.debug(
+                "Firebase not configured; notification logged only: type=%s customer_id=%s",
+                notification_type, customer_id,
+            )
     else:
         logger.debug("No device_token for customer %s, skipping push", customer_id)
 
