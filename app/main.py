@@ -63,7 +63,9 @@ if STATIC_DIR.is_dir():
 
 from app.core.startup import (
     ensure_default_admin,
+    ensure_device_token_columns,
     ensure_payment_notification_logs_table,
+    ensure_payments_status_column,
     ensure_payments_table,
 )
 
@@ -74,6 +76,10 @@ async def startup_event():
     # Ensure payments table exists (create if missing)
     await ensure_payments_table()
     await ensure_payment_notification_logs_table()
+    # Ensure payments.status column exists (fixes "column payments.status does not exist")
+    await ensure_payments_status_column()
+    # Ensure device_token column exists (fixes "column customers.device_token does not exist")
+    await ensure_device_token_columns()
     # Ensure default admin exists
     await ensure_default_admin()
     # Start payment notification cron (non-blocking)

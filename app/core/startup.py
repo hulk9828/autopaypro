@@ -39,6 +39,33 @@ CREATE TABLE IF NOT EXISTS payment_notification_logs (
 """
 
 
+async def ensure_device_token_columns():
+    """Add device_token column to customers and admins if missing (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS device_token VARCHAR"))
+            await session.execute(text("ALTER TABLE admins ADD COLUMN IF NOT EXISTS device_token VARCHAR"))
+            await session.commit()
+            logger.info("device_token columns ensured on customers and admins.")
+    except Exception as e:
+        logger.warning("Could not ensure device_token columns: %s", e)
+
+
+async def ensure_payments_status_column():
+    """Add status column to payments table if missing (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(
+                text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'")
+            )
+            await session.commit()
+            logger.info("payments.status column ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure payments.status column: %s", e)
+
+
 async def ensure_payments_table():
     """Create payments table if it does not exist (so app works even if migrations weren't run)."""
     try:
