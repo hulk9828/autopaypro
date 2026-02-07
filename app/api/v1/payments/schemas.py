@@ -77,11 +77,18 @@ class RecordManualPaymentRequest(BaseModel):
     customer_id: UUID = Field(..., description="Customer who paid")
     loan_id: UUID = Field(..., description="Loan the payment is for")
     due_date_iso: str = Field(..., description="Due date of the installment (ISO date/datetime)")
-    amount: float = Field(..., gt=0, description="Amount the customer paid")
+    amount: float = Field(..., description="Amount the customer paid (negative becomes 0)")
     payment_method: Literal["cash", "card", "online", "check"] = Field(
         ..., description="How the customer paid (cash, check, etc.)"
     )
     note: str | None = Field(None, max_length=500, description="Optional note for this payment")
+
+    @model_validator(mode="after")
+    def amount_non_negative(self):
+        """Clamp negative amount to zero."""
+        if self.amount is not None and self.amount < 0:
+            object.__setattr__(self, "amount", 0.0)
+        return self
 
 
 # --- Transaction History (user) ---
@@ -120,6 +127,32 @@ class OverduePaymentsResponse(BaseModel):
     total_overdue_payments: int = Field(..., description="Overdue payment count")
     total_outstanding_amount: float = Field(..., description="Total overdue amount")
     avg_overdue_days: float = Field(..., description="Average overdue days (avg days past due)")
+
+
+# --- Admin: Payment Summary (paid, unpaid, overdue, totals, search) ---
+class DueEntryItem(BaseModel):
+    """Single due entry (paid, unpaid, or overdue)."""
+    loan_id: UUID
+    customer_id: UUID
+    customer_name: str | None = None
+    vehicle_display: str | None = None
+    due_date: datetime = Field(..., description="Scheduled due date")
+    amount: float = Field(..., description="Installment amount")
+    payment_date: datetime | None = Field(None, description="When paid (for paid dues)")
+    payment_id: UUID | None = Field(None, description="Payment id if paid")
+    days_overdue: int | None = Field(None, description="Days past due (for overdue)")
+    days_until_due: int | None = Field(None, description="Days until due (for unpaid)")
+
+
+class PaymentSummaryResponse(BaseModel):
+    """Payment summary: paid dues, unpaid dues, overdue payments, totals, and search results."""
+    paid_dues: list[DueEntryItem] = Field(default_factory=list, description="Completed payments")
+    unpaid_dues: list[DueEntryItem] = Field(default_factory=list, description="Future installments not yet paid")
+    overdue_payments: list[DueEntryItem] = Field(default_factory=list, description="Past due installments not paid")
+    total_collected_amount: float = Field(..., description="Sum of all completed payments")
+    pending_amount: float = Field(..., description="Sum of future unpaid installments")
+    overdue_amount: float = Field(..., description="Sum of overdue installments")
+    total_payment_left: float = Field(..., description="pending_amount + overdue_amount (total remaining)")
 
 
 # --- Notifications (payment notification log) ---

@@ -14,6 +14,7 @@ from app.api.v1.payments.schemas import (
     MakePaymentResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
+    PaymentSummaryResponse,
     RecordManualPaymentRequest,
     TransactionHistoryResponse,
     TransactionItem,
@@ -171,6 +172,41 @@ async def update_payment_status(
     if not updated:
         AppException().raise_404("Payment not found")
     return updated
+
+
+# --- Admin: Payment Summary (paid, unpaid, overdue, totals, search) ---
+@router.get(
+    "/summary",
+    response_model=PaymentSummaryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Payment summary (admin)",
+    description="Get paid dues, unpaid dues, overdue payments, total collected, pending, overdue, total payment left. Search by customer name/email/phone.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def payment_summary(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    loan_id: Optional[UUID] = Query(None, description="Filter by loan ID"),
+    search: Optional[str] = Query(None, description="Search by customer name, email, or phone"),
+):
+    """Payment summary: paid, unpaid, overdue lists; total collected, pending, overdue, total payment left; search."""
+    service = PaymentService(db)
+    data = await service.get_payment_summary_admin(
+        customer_id=customer_id,
+        loan_id=loan_id,
+        search=search,
+    )
+    return PaymentSummaryResponse(
+        paid_dues=data["paid_dues"],
+        unpaid_dues=data["unpaid_dues"],
+        overdue_payments=data["overdue_payments"],
+        total_collected_amount=round(data["total_collected_amount"], 2),
+        pending_amount=round(data["pending_amount"], 2),
+        overdue_amount=round(data["overdue_amount"], 2),
+        total_payment_left=round(data["total_payment_left"], 2),
+    )
 
 
 # --- Admin: Overdue Accounts ---

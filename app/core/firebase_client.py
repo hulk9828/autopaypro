@@ -15,9 +15,15 @@ _firebase_app = None
 
 
 def _get_credentials():
-    """Load Firebase credentials from path or JSON string."""
-    path = (settings.FIREBASE_CREDENTIALS_PATH or "").strip()
+    """Load Firebase credentials from FIREBASE_CREDENTIALS_JSON (preferred) or FIREBASE_CREDENTIALS_PATH."""
     json_str = (settings.FIREBASE_CREDENTIALS_JSON or "").strip()
+    if json_str:
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.warning("Firebase credentials JSON invalid: %s", e)
+            return None
+    path = (settings.FIREBASE_CREDENTIALS_PATH or "").strip()
     if path:
         p = Path(path)
         if p.is_absolute():
@@ -30,12 +36,6 @@ def _get_credentials():
                 return json.load(f)
         logger.warning("Firebase credentials path not found: %s", full_path)
         return None
-    if json_str:
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError as e:
-            logger.warning("Firebase credentials JSON invalid: %s", e)
-            return None
     return None
 
 
