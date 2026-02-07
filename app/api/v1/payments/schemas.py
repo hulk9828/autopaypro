@@ -71,6 +71,19 @@ class UpdatePaymentStatusRequest(BaseModel):
     status: Literal["completed", "failed"] = Field(..., description="Payment status")
 
 
+# --- Admin: record manual payment ---
+class RecordManualPaymentRequest(BaseModel):
+    """Admin records a manual payment received from a customer."""
+    customer_id: UUID = Field(..., description="Customer who paid")
+    loan_id: UUID = Field(..., description="Loan the payment is for")
+    due_date_iso: str = Field(..., description="Due date of the installment (ISO date/datetime)")
+    amount: float = Field(..., gt=0, description="Amount the customer paid")
+    payment_method: Literal["cash", "card", "online", "check"] = Field(
+        ..., description="How the customer paid (cash, check, etc.)"
+    )
+    note: str | None = Field(None, max_length=500, description="Optional note for this payment")
+
+
 # --- Transaction History (user) ---
 class TransactionHistoryResponse(BaseModel):
     """Paginated transaction history."""

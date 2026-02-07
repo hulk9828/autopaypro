@@ -97,14 +97,19 @@ class PaymentService:
         return None
 
     async def validate_due_date_for_loan(
-        self, loan_id: UUID, customer_id: UUID, due_dt: datetime
+        self, loan_id: UUID, customer_id: UUID, due_dt: datetime, only_completed: bool = False
     ) -> tuple[datetime, float] | None:
-        """Check that due_dt is a valid unpaid due date for the loan. Returns (due_dt, amount) or None."""
+        """Check that due_dt is a valid unpaid due date for the loan. Returns (due_dt, amount) or None.
+        If only_completed=True, only completed payments count as paid (allows manual record for failed-due dates)."""
         loan = await self.db.get(Loan, loan_id)
         if not loan or loan.customer_id != customer_id:
             return None
         due_d = due_dt.date()
-        paid = await self._get_paid_due_dates_for_loan(loan_id)
+        paid = await (
+            self._get_paid_due_dates_for_loan_completed(loan_id)
+            if only_completed
+            else self._get_paid_due_dates_for_loan(loan_id)
+        )
         if due_d in paid:
             return None
         # Check due_d is one of the scheduled due dates
@@ -267,6 +272,98 @@ class PaymentService:
         await self.db.commit()
         await self.db.refresh(payment)
         return payment
+
+    async def _record_manual_payment(
+        self,
+        loan_id: UUID,
+        customer_id: UUID,
+        due_date: datetime,
+        amount: float,
+        payment_method: str,
+        note: str | None = None,
+    ) -> Payment | None:
+        """Create manual payment record. Returns None if duplicate (completed payment already exists for loan + due date)."""
+        existing = await self.db.execute(
+            select(Payment).where(
+                Payment.loan_id == loan_id,
+                func.date(Payment.due_date) == due_date.date(),
+                Payment.status == PaymentStatus.completed.value,
+            )
+        )
+        if existing.scalars().first():
+            return None
+        payment = Payment(
+            loan_id=loan_id,
+            customer_id=customer_id,
+            amount=amount,
+            payment_method=payment_method,
+            payment_date=datetime.utcnow(),
+            due_date=due_date,
+            status=PaymentStatus.completed.value,
+            note=note,
+        )
+        self.db.add(payment)
+        await self.db.commit()
+        await self.db.refresh(payment)
+        return payment
+
+    async def record_manual_payment_admin(
+        self,
+        customer_id: UUID,
+        loan_id: UUID,
+        due_date_iso: str,
+        amount: float,
+        payment_method: str,
+        note: str | None = None,
+    ) -> TransactionItem | None:
+        """Admin records a manual payment received from a customer. Returns TransactionItem or None if invalid."""
+        loan = await self.db.get(Loan, loan_id)
+        if not loan:
+            return None
+        if loan.customer_id != customer_id:
+            return None
+        try:
+            due_dt = _parse_due_date_iso(due_date_iso)
+        except ValueError:
+            return None
+        validated = await self.validate_due_date_for_loan(loan_id, customer_id, due_dt, only_completed=True)
+        if not validated:
+            return None  # Invalid or already paid due date
+        payment = await self._record_manual_payment(
+            loan_id=loan_id,
+            customer_id=customer_id,
+            due_date=due_dt,
+            amount=amount,
+            payment_method=payment_method,
+            note=note,
+        )
+        if not payment:
+            return None
+        customer = await self.db.get(Customer, customer_id)
+        vehicle = await self.db.get(Vehicle, loan.vehicle_id)
+        customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+        vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+        await send_payment_notification(
+            self.db,
+            customer_id=customer_id,
+            notification_type="payment_received",
+            scope_key=scope_key_for_payment(payment.id),
+            title="Payment received",
+            body=f"Your payment of ${payment.amount:.2f} has been received.",
+        )
+        return TransactionItem(
+            id=payment.id,
+            loan_id=payment.loan_id,
+            customer_id=payment.customer_id,
+            customer_name=customer_name,
+            vehicle_display=vehicle_display,
+            amount=payment.amount,
+            payment_method=payment.payment_method,
+            status=payment.status,
+            payment_date=payment.payment_date,
+            due_date=payment.due_date,
+            created_at=payment.created_at,
+        )
 
     async def list_my_transactions(
         self,

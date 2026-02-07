@@ -14,6 +14,7 @@ from app.api.v1.payments.schemas import (
     MakePaymentResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
+    RecordManualPaymentRequest,
     TransactionHistoryResponse,
     TransactionItem,
     UpdatePaymentStatusRequest,
@@ -114,6 +115,38 @@ async def my_transaction_history(
         limit=limit,
     )
     return TransactionHistoryResponse(items=items, total=total)
+
+
+# --- Admin: record manual payment ---
+@router.post(
+    "/record-manual",
+    response_model=TransactionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Record manual payment (admin)",
+    description="Admin records a manual payment received from a customer: select customer, loan, due date, amount paid, payment method, and optional note.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def record_manual_payment(
+    data: RecordManualPaymentRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin records a payment received manually (cash, check, etc.) from a customer."""
+    service = PaymentService(db)
+    transaction = await service.record_manual_payment_admin(
+        customer_id=data.customer_id,
+        loan_id=data.loan_id,
+        due_date_iso=data.due_date_iso,
+        amount=data.amount,
+        payment_method=data.payment_method,
+        note=data.note,
+    )
+    if not transaction:
+        AppException().raise_400(
+            "Invalid or already paid due date. Ensure customer belongs to loan and the due date is an unpaid scheduled installment."
+        )
+    return transaction
 
 
 # --- Admin: update payment status (triggers Payment Confirmed notification) ---

@@ -32,6 +32,7 @@ class Payment(Base):
     payment_date = Column(DateTime, default=datetime.utcnow, nullable=False)
     due_date = Column(DateTime, nullable=False)  # The due date this payment was for
     status = Column(String(20), default=PaymentStatus.completed.value, nullable=False)
+    note = Column(String(500), nullable=True)  # Admin note for manual payments
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
