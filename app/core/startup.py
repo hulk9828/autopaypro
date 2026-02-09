@@ -66,6 +66,20 @@ async def ensure_payments_status_column():
         logger.warning("Could not ensure payments.status column: %s", e)
 
 
+async def ensure_payments_note_column():
+    """Add note column to payments table if missing (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(
+                text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS note VARCHAR(500)")
+            )
+            await session.commit()
+            logger.info("payments.note column ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure payments.note column: %s", e)
+
+
 async def ensure_payments_table():
     """Create payments table if it does not exist (so app works even if migrations weren't run)."""
     try:
