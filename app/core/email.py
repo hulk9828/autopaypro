@@ -189,3 +189,44 @@ AutoLoanPro Team
         body=html_body,
         is_html=True
     )
+
+
+async def send_overdue_reminder_email(
+    customer_email: str,
+    customer_name: str,
+    overdue_count: int,
+    total_overdue_amount: float,
+    *,
+    subject: str | None = None,
+    body_override: str | None = None,
+) -> bool:
+    """
+    Send overdue payment reminder email to a customer.
+    If subject or body_override are provided, use them; otherwise use default.
+    """
+    default_subject = "AutoLoanPro - Overdue Payment Reminder"
+    if subject is None:
+        subject = default_subject
+    if body_override is not None:
+        html_body = body_override
+    else:
+        installments = "installment" if overdue_count == 1 else "installments"
+        html_body = f"""
+<html>
+  <body>
+    <h2>Overdue Payment Reminder</h2>
+    <p>Dear {customer_name},</p>
+    <p>You have <strong>{overdue_count}</strong> overdue {installments} totaling <strong>${total_overdue_amount:.2f}</strong>.</p>
+    <p>Please log in to your account and make a payment at your earliest convenience to avoid any additional fees or impact on your account.</p>
+    <p>If you have already made a payment, please disregard this message.</p>
+    <p>If you have any questions, please contact our support team.</p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
+    return await send_email(
+        to_email=customer_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+    )

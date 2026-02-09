@@ -65,10 +65,102 @@ class MakePaymentResponse(BaseModel):
     transaction: TransactionItem | None = Field(None, description="Created transaction when success=True")
 
 
+# --- Public checkout (no auth): get payment details + Stripe client_secret ---
+class CheckoutRequest(BaseModel):
+    """Request for checkout: identify customer and due; no auth required."""
+    loan_id: UUID = Field(..., description="Loan to pay")
+    payment_type: Literal["next", "due"] = Field(
+        ...,
+        description="'next' = next scheduled unpaid; 'due' = specific due date (requires due_date_iso)",
+    )
+    due_date_iso: str | None = Field(None, description="Required when payment_type is 'due'. ISO date for the due date.")
+    email: str | None = Field(None, description="Customer email (use email or customer_id to identify customer)")
+    customer_id: UUID | None = Field(None, description="Customer ID (use email or customer_id to identify customer)")
+
+    @model_validator(mode="after")
+    def due_date_required_when_due_type(self):
+        if self.payment_type == "due" and not (self.due_date_iso and self.due_date_iso.strip()):
+            raise ValueError("due_date_iso is required when payment_type is 'due'")
+        return self
+
+    @model_validator(mode="after")
+    def require_email_or_customer_id(self):
+        if not (self.email and self.email.strip()) and not self.customer_id:
+            raise ValueError("Provide either email or customer_id to identify the customer")
+        return self
+
+
+class CheckoutResponse(BaseModel):
+    """Payment details for checkout: amount, Stripe client_secret, and display info. No auth required."""
+    amount: float = Field(..., description="Amount due in currency units")
+    amount_cents: int = Field(..., description="Amount in cents for Stripe")
+    currency: str = Field(..., description="Currency code (e.g. usd)")
+    client_secret: str = Field(..., description="Stripe PaymentIntent client_secret for client-side confirm")
+    payment_intent_id: str = Field(..., description="Stripe PaymentIntent ID (pi_xxx)")
+    due_date: datetime = Field(..., description="Due date for this installment")
+    customer_name: str | None = Field(None, description="Customer display name")
+    vehicle_display: str | None = Field(None, description="Vehicle description (year make model)")
+    loan_id: UUID = Field(..., description="Loan ID")
+    customer_id: UUID = Field(..., description="Customer ID")
+
+
+class GetCheckoutResponse(BaseModel):
+    """Checkout details retrieved by payment_intent_id (e.g. for polling or status). Includes Stripe status."""
+    amount: float = Field(..., description="Amount in currency units")
+    amount_cents: int = Field(..., description="Amount in cents")
+    currency: str = Field(..., description="Currency code (e.g. usd)")
+    status: str = Field(..., description="Stripe PaymentIntent status: requires_payment_method, requires_confirmation, requires_action, processing, succeeded, canceled")
+    client_secret: str | None = Field(None, description="Stripe client_secret (for client-side confirm when status is requires_payment_method/requires_confirmation)")
+    payment_intent_id: str = Field(..., description="Stripe PaymentIntent ID (pi_xxx)")
+    due_date: datetime | None = Field(None, description="Due date from metadata")
+    customer_name: str | None = Field(None, description="Customer display name")
+    vehicle_display: str | None = Field(None, description="Vehicle description")
+    loan_id: UUID | None = Field(None, description="Loan ID from metadata")
+    customer_id: UUID | None = Field(None, description="Customer ID from metadata")
+
+
+# --- Public payment (no auth): confirm with card_token using payment_intent_id from checkout ---
+class PublicPaymentRequest(BaseModel):
+    """Confirm payment using PaymentIntent from checkout. No auth required."""
+    payment_intent_id: str = Field(..., min_length=1, description="Stripe PaymentIntent ID from checkout response")
+    card_token: str = Field(
+        ...,
+        min_length=1,
+        description="Stripe PaymentMethod ID (pm_xxx) or card token (tok_xxx). Not the client_secret.",
+    )
+
+    @model_validator(mode="after")
+    def card_token_not_client_secret(self):
+        if "_secret_" in (self.card_token or ""):
+            raise ValueError(
+                "card_token must be a PaymentMethod ID (pm_xxx) or card token (tok_xxx), not the PaymentIntent client_secret."
+            )
+        return self
+
+
 # --- Admin: update payment status ---
 class UpdatePaymentStatusRequest(BaseModel):
     """Admin updates payment status (e.g. to confirmed/completed)."""
     status: Literal["completed", "failed"] = Field(..., description="Payment status")
+
+
+# --- Admin: bulk overdue reminder (email + notification) ---
+class BulkOverdueReminderRequest(BaseModel):
+    """Optional overrides for bulk overdue reminder email and notification. All optional."""
+    email_subject: str | None = Field(None, max_length=200, description="Custom email subject (default: AutoLoanPro - Overdue Payment Reminder)")
+    email_body_override: str | None = Field(None, description="Custom HTML email body (replaces default; no template variables)")
+    notification_title: str | None = Field(None, max_length=100, description="Push notification title (default: Overdue Payment Reminder)")
+    notification_body: str | None = Field(None, max_length=500, description="Push notification body (default message about overdue payments)")
+
+
+class BulkOverdueReminderResponse(BaseModel):
+    """Result of sending bulk email and notifications to customers with overdue payments."""
+    customer_count: int = Field(..., description="Number of distinct customers with overdue payments")
+    emails_sent: int = Field(..., description="Emails sent successfully")
+    emails_failed: int = Field(..., description="Emails that failed to send")
+    notifications_sent: int = Field(..., description="Push notifications delivered")
+    no_device_count: int = Field(..., description="Customers with no device token (app not installed / no token)")
+    notifications_failed: int = Field(..., description="Push notifications that failed to send")
 
 
 # --- Admin: record manual payment ---
@@ -127,6 +219,50 @@ class OverduePaymentsResponse(BaseModel):
     total_overdue_payments: int = Field(..., description="Overdue payment count")
     total_outstanding_amount: float = Field(..., description="Total overdue amount")
     avg_overdue_days: float = Field(..., description="Average overdue days (avg days past due)")
+
+
+# --- Admin: Customers with dues (for create checkout) ---
+class DueCustomerItem(BaseModel):
+    """One per (customer, loan) with unpaid dues. Use loan_id + customer_id/email to call create checkout (payment_type=next)."""
+    customer_id: UUID = Field(..., description="Customer ID")
+    email: str = Field(..., description="Customer email (for create checkout)")
+    customer_name: str | None = Field(None, description="Customer full name")
+    phone: str | None = Field(None, description="Customer phone")
+    loan_id: UUID = Field(..., description="Loan ID (for create checkout)")
+    vehicle_display: str | None = Field(None, description="Vehicle (year make model)")
+    unpaid_count: int = Field(..., description="Number of unpaid installments")
+    total_unpaid_amount: float = Field(..., description="Total amount due for this loan")
+    next_due_date: datetime | None = Field(None, description="First unpaid due date")
+    next_due_date_iso: str | None = Field(None, description="First unpaid due date ISO (for create checkout with payment_type=due)")
+
+
+class DueCustomersResponse(BaseModel):
+    """List of customers who have unpaid dues, with loan_id and details for create checkout."""
+    items: list[DueCustomerItem] = Field(default_factory=list)
+    total: int = Field(..., description="Total count (for pagination)")
+
+
+# --- Admin: Due installments list (for create checkout per due) ---
+class DueInstallmentItem(BaseModel):
+    """Single unpaid installment. Use loan_id, customer_id/email, due_date_iso to call create checkout (payment_type=due)."""
+    loan_id: UUID = Field(..., description="Loan ID (for create checkout)")
+    customer_id: UUID = Field(..., description="Customer ID (for create checkout)")
+    email: str = Field(..., description="Customer email (for create checkout)")
+    customer_name: str | None = Field(None, description="Customer full name")
+    phone: str | None = Field(None, description="Customer phone")
+    vehicle_display: str | None = Field(None, description="Vehicle (year make model)")
+    due_date: datetime = Field(..., description="Due date for this installment")
+    due_date_iso: str = Field(..., description="Due date ISO (for create checkout payment_type=due, due_date_iso)")
+    amount: float = Field(..., description="Amount due")
+    days_overdue: int | None = Field(None, description="Days past due (if overdue)")
+    days_until_due: int | None = Field(None, description="Days until due (if future)")
+
+
+class DueInstallmentsResponse(BaseModel):
+    """List of all unpaid due installments with everything needed for create checkout."""
+    items: list[DueInstallmentItem] = Field(default_factory=list)
+    total: int = Field(..., description="Total count (for pagination)")
+    total_amount: float = Field(..., description="Sum of all unpaid amounts in list (or total)")
 
 
 # --- Admin: Payment Summary (paid, unpaid, overdue, totals, search) ---

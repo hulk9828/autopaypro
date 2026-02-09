@@ -5,16 +5,20 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.payments.schemas import (
+    DueCustomerItem,
     DueEntryItem,
+    DueInstallmentItem,
     NOTIFICATION_TYPE_DISPLAY,
     NotificationItem,
     OverdueItem,
     TransactionItem,
 )
 from app.core.config import settings
+from app.core.email import send_overdue_reminder_email
 from app.core.exceptions import AppException
 from app.core.notification_service import scope_key_for_payment, send_payment_notification
-from app.core.stripe_client import create_payment_intent, confirm_payment_intent_with_token
+from app.core.stripe_client import create_payment_intent, confirm_payment_intent_with_token, get_payment_intent
+from app.api.v1.notifications.service import send_notification_to_customers
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment, PaymentStatus
@@ -90,12 +94,12 @@ class PaymentService:
         today = date.today()
         from_date = today
         to_date = today + timedelta(days=365 * 2)
-        due_dates = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+            due_dates = _get_bi_weekly_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                from_date,
+                to_date,
+            )
         paid = await self._get_paid_due_dates_for_loan(loan_id)
         for due_dt in due_dates:
             if due_dt.date() not in paid:
@@ -122,8 +126,8 @@ class PaymentService:
         from_date = due_d - timedelta(days=14 * 30)
         to_date = due_d + timedelta(days=14)
         scheduled = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
+                loan.created_at,
+                loan.loan_term_months,
             from_date,
             to_date,
         )
@@ -244,6 +248,225 @@ class PaymentService:
                 body=f"Your payment of ${_ensure_non_negative_amount(payment.amount):.2f} has been received.",
             )
 
+        return {
+            "success": True,
+            "message": "Payment completed successfully",
+            "transaction": transaction,
+        }
+
+    async def get_checkout(
+        self,
+        loan_id: UUID,
+        payment_type: str,
+        due_date_iso: str | None,
+        email: str | None,
+        customer_id: UUID | None,
+    ) -> dict:
+        """
+        Resolve customer (by email or customer_id), validate loan and due, create Stripe PaymentIntent.
+        Returns checkout details (amount, client_secret, payment_intent_id, due_date, customer_name, etc.).
+        No auth required.
+        """
+        if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
+            AppException().raise_400("Stripe is not configured")
+        customer = None
+        if customer_id:
+            customer = await self.db.get(Customer, customer_id)
+        if not customer and email and email.strip():
+            result = await self.db.execute(select(Customer).where(Customer.email == email.strip()))
+            customer = result.scalars().first()
+        if not customer:
+            AppException().raise_404("Customer not found. Provide a valid email or customer_id.")
+        customer_id_resolved = customer.id
+        loan = await self.db.get(Loan, loan_id)
+        if not loan:
+            AppException().raise_404("Loan not found")
+        if loan.customer_id != customer_id_resolved:
+            AppException().raise_403("This loan does not belong to the given customer")
+        due_dt: datetime
+        amount: float
+        if payment_type == "next":
+            next_info = await self.get_next_unpaid_due(loan_id, customer_id_resolved)
+            if not next_info:
+                AppException().raise_400("No next payment due for this loan")
+            due_dt, amount = next_info
+        else:
+            if not due_date_iso or not due_date_iso.strip():
+                AppException().raise_400("due_date_iso is required when payment_type is 'due'")
+            try:
+                due_dt = _parse_due_date_iso(due_date_iso)
+            except ValueError as e:
+                AppException().raise_400(str(e))
+            validated = await self.validate_due_date_for_loan(loan_id, customer_id_resolved, due_dt)
+            if not validated:
+                AppException().raise_400("Invalid or already paid due date for this loan")
+            due_dt, amount = validated
+        amount_cents = int(round(amount * 100))
+        if amount_cents < 50:
+            AppException().raise_400("Amount too small for Stripe (minimum $0.50)")
+        due_date_iso_str = due_dt.isoformat()
+        try:
+            result = create_payment_intent(
+                amount_cents=amount_cents,
+                currency=settings.STRIPE_CURRENCY,
+                loan_id=loan_id,
+                customer_id=customer_id_resolved,
+                due_date_iso=due_date_iso_str,
+                customer_email=customer.email,
+            )
+        except Exception as e:
+            AppException().raise_400(f"Checkout failed: {e}")
+        vehicle = await self.db.get(Vehicle, loan.vehicle_id)
+        vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+        customer_name = f"{customer.first_name} {customer.last_name}"
+        return {
+            "amount": amount,
+            "amount_cents": amount_cents,
+            "currency": settings.STRIPE_CURRENCY or "usd",
+            "client_secret": result["client_secret"],
+            "payment_intent_id": result["payment_intent_id"],
+            "due_date": due_dt,
+            "customer_name": customer_name,
+            "vehicle_display": vehicle_display,
+            "loan_id": loan_id,
+            "customer_id": customer_id_resolved,
+        }
+
+    async def get_checkout_by_payment_intent_id(self, payment_intent_id: str) -> dict:
+        """
+        Retrieve checkout details by Stripe PaymentIntent ID (e.g. for polling or status).
+        Returns amount, status, client_secret, metadata-derived fields, and optional display info from DB.
+        """
+        if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
+            AppException().raise_400("Stripe is not configured")
+        intent = get_payment_intent(payment_intent_id)
+        if not intent:
+            AppException().raise_404("Checkout not found. Invalid or expired payment_intent_id.")
+        amount_cents = int(intent.get("amount") or 0)
+        amount = amount_cents / 100.0
+        currency = (intent.get("currency") or "usd").lower()
+        status = intent.get("status") or "unknown"
+        client_secret = intent.get("client_secret") or ""
+        meta = intent.get("metadata") or {}
+        loan_id = None
+        customer_id = None
+        due_date = None
+        if meta.get("loan_id"):
+            try:
+                loan_id = UUID(meta["loan_id"])
+            except (ValueError, TypeError):
+                pass
+        if meta.get("customer_id"):
+            try:
+                customer_id = UUID(meta["customer_id"])
+            except (ValueError, TypeError):
+                pass
+        if meta.get("due_date_iso"):
+            try:
+                due_date = _parse_due_date_iso(meta["due_date_iso"])
+            except (ValueError, TypeError):
+                pass
+        customer_name = None
+        vehicle_display = None
+        if customer_id and loan_id:
+            customer = await self.db.get(Customer, customer_id)
+            if customer:
+                customer_name = f"{customer.first_name} {customer.last_name}"
+            loan = await self.db.get(Loan, loan_id)
+            if loan:
+                vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
+                vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+        return {
+            "amount": amount,
+            "amount_cents": amount_cents,
+            "currency": currency,
+            "status": status,
+            "client_secret": client_secret or None,
+            "payment_intent_id": payment_intent_id,
+            "due_date": due_date,
+            "customer_name": customer_name,
+            "vehicle_display": vehicle_display,
+            "loan_id": loan_id,
+            "customer_id": customer_id,
+        }
+
+    async def confirm_public_payment(self, payment_intent_id: str, card_token: str) -> dict:
+        """
+        Confirm a PaymentIntent (from checkout) with card_token, record payment, return transaction.
+        No auth required; intent metadata identifies loan/customer/due.
+        """
+        if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
+            AppException().raise_400("Stripe is not configured")
+        try:
+            pi = confirm_payment_intent_with_token(payment_intent_id, card_token)
+        except Exception as e:
+            err_msg = str(e).strip().lower()
+            if "no such paymentmethod" in err_msg or "_secret_" in err_msg:
+                AppException().raise_400(
+                    "Invalid card_token: send a PaymentMethod ID (pm_xxx) or token (tok_xxx). "
+                    "Do not send the PaymentIntent client_secret."
+                )
+            AppException().raise_400(f"Payment failed: {e}")
+        if pi.status != "succeeded":
+            AppException().raise_400(f"Payment not completed (status: {pi.status})")
+        meta = pi.get("metadata") or {}
+        loan_id_str = meta.get("loan_id")
+        customer_id_str = meta.get("customer_id")
+        due_date_iso = meta.get("due_date_iso")
+        if not loan_id_str or not customer_id_str or not due_date_iso:
+            AppException().raise_400("Invalid PaymentIntent: missing loan/customer/due metadata")
+        loan_id = UUID(loan_id_str)
+        customer_id = UUID(customer_id_str)
+        try:
+            due_dt = _parse_due_date_iso(due_date_iso)
+        except (ValueError, TypeError):
+            AppException().raise_400("Invalid due_date in PaymentIntent metadata")
+        amount_received = _ensure_non_negative_amount(
+            (pi.get("amount_received") or pi.get("amount") or 0) / 100.0
+        )
+        payment = await self._record_payment(
+            loan_id=loan_id,
+            customer_id=customer_id,
+            due_date=due_dt,
+            amount=amount_received,
+            status="completed",
+        )
+        if not payment:
+            existing = await self.db.execute(
+                select(Payment).where(
+                    Payment.loan_id == loan_id,
+                    func.date(Payment.due_date) == due_dt.date(),
+                )
+            )
+            payment = existing.scalars().first()
+        transaction = None
+        if payment:
+            loan = await self.db.get(Loan, payment.loan_id)
+            customer = await self.db.get(Customer, payment.customer_id)
+            vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+            transaction = TransactionItem(
+                id=payment.id,
+                loan_id=payment.loan_id,
+                customer_id=payment.customer_id,
+                customer_name=customer_name,
+                vehicle_display=vehicle_display,
+                amount=_ensure_non_negative_amount(payment.amount),
+                payment_method=payment.payment_method,
+                status=payment.status,
+                payment_date=payment.payment_date,
+                due_date=payment.due_date,
+                created_at=payment.created_at,
+            )
+            await send_payment_notification(
+                self.db,
+                customer_id=payment.customer_id,
+                notification_type="payment_received",
+                scope_key=scope_key_for_payment(payment.id),
+                title="Payment received",
+                body=f"Your payment of ${_ensure_non_negative_amount(payment.amount):.2f} has been received.",
+            )
         return {
             "success": True,
             "message": "Payment completed successfully",
@@ -628,6 +851,162 @@ class PaymentService:
             "total_payment_left": pending_amount + overdue_amount,
         }
 
+    async def list_due_customers_admin(
+        self,
+        customer_id: UUID | None = None,
+        loan_id: UUID | None = None,
+        search: str | None = None,
+        skip: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[DueCustomerItem], int]:
+        """
+        List customers who have at least one unpaid due, with loan_id and details for create checkout.
+        One row per (customer, loan). Use loan_id + customer_id/email to call create checkout (payment_type=next or due).
+        Returns (items_page, total).
+        """
+        today = date.today()
+        base_loans = (
+            select(Loan, Customer, Vehicle)
+            .join(Customer, Loan.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+        )
+        if customer_id is not None:
+            base_loans = base_loans.where(Loan.customer_id == customer_id)
+        if loan_id is not None:
+            base_loans = base_loans.where(Loan.id == loan_id)
+        if search and search.strip():
+            q = search.strip()
+            base_loans = base_loans.where(
+                or_(
+                    Customer.first_name.ilike(f"%{q}%"),
+                    Customer.last_name.ilike(f"%{q}%"),
+                    Customer.email.ilike(f"%{q}%"),
+                    Customer.phone.ilike(f"%{q}%"),
+                    func.concat(Customer.first_name, " ", Customer.last_name).ilike(f"%{q}%"),
+                )
+            )
+        loans_result = await self.db.execute(base_loans)
+        all_rows: list[DueCustomerItem] = []
+        for loan, customer, vehicle in loans_result.all():
+            loan_start = (loan.created_at + timedelta(days=14)).date()
+            loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+            to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+            due_dates = _get_bi_weekly_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                loan_start,
+                to_date,
+            )
+            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            unpaid_dates: list[datetime] = []
+            total_unpaid = 0.0
+            amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            for due_dt in due_dates:
+                if due_dt.date() in paid_completed:
+                    continue
+                unpaid_dates.append(due_dt)
+                total_unpaid += amount_per
+            if not unpaid_dates:
+                continue
+            unpaid_dates.sort()
+            next_due = unpaid_dates[0]
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            all_rows.append(
+                DueCustomerItem(
+                    customer_id=customer.id,
+                    email=customer.email,
+                    customer_name=f"{customer.first_name} {customer.last_name}",
+                    phone=customer.phone or None,
+                    loan_id=loan.id,
+                    vehicle_display=vehicle_display,
+                    unpaid_count=len(unpaid_dates),
+                    total_unpaid_amount=total_unpaid,
+                    next_due_date=next_due,
+                    next_due_date_iso=next_due.isoformat(),
+                )
+            )
+        total = len(all_rows)
+        page = all_rows[skip : skip + limit]
+        return (page, total)
+
+    async def list_due_installments_admin(
+        self,
+        customer_id: UUID | None = None,
+        loan_id: UUID | None = None,
+        search: str | None = None,
+        skip: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[DueInstallmentItem], int, float]:
+        """
+        List every unpaid due installment with loan_id, customer, due_date_iso, amount for create checkout.
+        Use each item to call create checkout with payment_type=due and due_date_iso.
+        Returns (items_page, total, total_amount).
+        """
+        today = date.today()
+        base_loans = (
+            select(Loan, Customer, Vehicle)
+            .join(Customer, Loan.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+        )
+        if customer_id is not None:
+            base_loans = base_loans.where(Loan.customer_id == customer_id)
+        if loan_id is not None:
+            base_loans = base_loans.where(Loan.id == loan_id)
+        if search and search.strip():
+            q = search.strip()
+            base_loans = base_loans.where(
+                or_(
+                    Customer.first_name.ilike(f"%{q}%"),
+                    Customer.last_name.ilike(f"%{q}%"),
+                    Customer.email.ilike(f"%{q}%"),
+                    Customer.phone.ilike(f"%{q}%"),
+                    func.concat(Customer.first_name, " ", Customer.last_name).ilike(f"%{q}%"),
+                )
+            )
+        loans_result = await self.db.execute(base_loans)
+        all_items: list[DueInstallmentItem] = []
+        total_amount = 0.0
+        for loan, customer, vehicle in loans_result.all():
+            loan_start = (loan.created_at + timedelta(days=14)).date()
+            loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+            to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+            due_dates = _get_bi_weekly_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                loan_start,
+                to_date,
+            )
+            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            customer_name = f"{customer.first_name} {customer.last_name}"
+            for due_dt in due_dates:
+                due_d = due_dt.date()
+                if due_d in paid_completed:
+                    continue
+                days_overdue = (today - due_d).days if due_d < today else None
+                days_until_due = (due_d - today).days if due_d >= today else None
+                all_items.append(
+                    DueInstallmentItem(
+                        loan_id=loan.id,
+                        customer_id=customer.id,
+                        email=customer.email,
+                        customer_name=customer_name,
+                        phone=customer.phone or None,
+                        vehicle_display=vehicle_display,
+                        due_date=due_dt,
+                        due_date_iso=due_dt.isoformat(),
+            amount=amount,
+                        days_overdue=days_overdue,
+                        days_until_due=days_until_due,
+                    )
+                )
+                total_amount += amount
+        all_items.sort(key=lambda x: (x.due_date, x.loan_id))
+        total = len(all_items)
+        page = all_items[skip : skip + limit]
+        return (page, total, total_amount)
+
     async def list_overdue_for_admin(
         self,
         skip: int = 0,
@@ -668,7 +1047,7 @@ class PaymentService:
                         customer_id=loan.customer_id,
                         customer_name=customer_name,
                         vehicle_display=vehicle_display,
-                        due_date=due_dt,
+            due_date=due_dt,
                         amount=_ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                         days_overdue=days_overdue,
                     )
@@ -680,6 +1059,98 @@ class PaymentService:
         avg_days = (sum(i.days_overdue for i in all_items) / total_count) if total_count else 0.0
         page = all_items[skip : skip + limit]
         return (page, total_count, total_outstanding, avg_days)
+
+    async def get_overdue_customer_contacts(
+        self,
+    ) -> list[dict]:
+        """
+        Get distinct customers who have at least one overdue installment.
+        Returns list of dicts: customer_id, email, first_name, last_name, customer_name, overdue_count, total_overdue_amount.
+        """
+        today = date.today()
+        loans_result = await self.db.execute(
+            select(Loan, Customer, Vehicle)
+            .join(Customer, Loan.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+        )
+        # Aggregate by customer_id: overdue_count, total_amount
+        customer_overdue: dict[UUID, dict] = {}
+        for loan, customer, vehicle in loans_result.all():
+            from_date = (loan.created_at + timedelta(days=14)).date()
+            to_date = today
+            due_dates = _get_bi_weekly_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                from_date,
+                to_date,
+            )
+            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            for due_dt in due_dates:
+                due_d = due_dt.date()
+                if due_d >= today or due_d in paid_completed:
+                    continue
+                amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+                cid = loan.customer_id
+                if cid not in customer_overdue:
+                    customer_overdue[cid] = {
+                        "customer_id": cid,
+                        "email": customer.email,
+                        "first_name": customer.first_name,
+                        "last_name": customer.last_name,
+                        "customer_name": f"{customer.first_name} {customer.last_name}",
+                        "overdue_count": 0,
+                        "total_overdue_amount": 0.0,
+                    }
+                customer_overdue[cid]["overdue_count"] += 1
+                customer_overdue[cid]["total_overdue_amount"] += amount
+        return list(customer_overdue.values())
+
+    async def send_bulk_overdue_reminder(
+        self,
+        *,
+        email_subject: str | None = None,
+        email_body_override: str | None = None,
+        notification_title: str | None = None,
+        notification_body: str | None = None,
+    ) -> dict:
+        """
+        Send bulk email and push notification to all customers with overdue payments.
+        Returns counts: customer_count, emails_sent, emails_failed, notifications_sent, no_device_count, notifications_failed.
+        """
+        contacts = await self.get_overdue_customer_contacts()
+        customer_ids = [c["customer_id"] for c in contacts]
+        emails_sent = 0
+        emails_failed = 0
+        for c in contacts:
+            ok = await send_overdue_reminder_email(
+                customer_email=c["email"],
+                customer_name=c["customer_name"],
+                overdue_count=c["overdue_count"],
+                total_overdue_amount=c["total_overdue_amount"],
+                subject=email_subject,
+                body_override=email_body_override,
+            )
+            if ok:
+                emails_sent += 1
+            else:
+                emails_failed += 1
+        default_title = "Overdue Payment Reminder"
+        default_body = "You have overdue payment(s). Please log in and pay at your earliest convenience."
+        sent_count, no_device_count, failed_count = await send_notification_to_customers(
+            self.db,
+            title=notification_title or default_title,
+            body=notification_body or default_body,
+            customer_ids=customer_ids,
+            data={"type": "overdue_reminder"},
+        )
+        return {
+            "customer_count": len(contacts),
+            "emails_sent": emails_sent,
+            "emails_failed": emails_failed,
+            "notifications_sent": sent_count,
+            "no_device_count": no_device_count,
+            "notifications_failed": failed_count,
+        }
 
     async def update_payment_status_admin(
         self,

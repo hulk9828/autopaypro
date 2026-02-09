@@ -53,3 +53,25 @@ def confirm_payment_intent_with_token(payment_intent_id: str, card_token: str):
         raise ValueError("Stripe is not configured (STRIPE_SECRET_KEY)")
     stripe.api_key = settings.STRIPE_SECRET_KEY
     return stripe.PaymentIntent.confirm(payment_intent_id, payment_method=card_token)
+
+
+def get_payment_intent(payment_intent_id: str) -> dict | None:
+    """
+    Retrieve a PaymentIntent from Stripe.
+    Returns dict with id, amount, currency, status, client_secret, metadata, or None if not found/invalid.
+    """
+    if not _stripe_available():
+        return None
+    try:
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+        return {
+            "id": intent.id,
+            "amount": getattr(intent, "amount", 0),
+            "currency": getattr(intent, "currency", "usd"),
+            "status": getattr(intent, "status", "unknown"),
+            "client_secret": getattr(intent, "client_secret", None) or "",
+            "metadata": dict(intent.metadata or {}),
+        }
+    except Exception:
+        return None

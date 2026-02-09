@@ -10,11 +10,19 @@ logger = logging.getLogger(__name__)
 
 from app.api.v1.payments.schemas import (
     AdminTransactionHistoryResponse,
+    BulkOverdueReminderRequest,
+    BulkOverdueReminderResponse,
+    CheckoutRequest,
+    CheckoutResponse,
+    DueCustomersResponse,
+    DueInstallmentsResponse,
+    GetCheckoutResponse,
     MakePaymentRequest,
     MakePaymentResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
     PaymentSummaryResponse,
+    PublicPaymentRequest,
     RecordManualPaymentRequest,
     TransactionHistoryResponse,
     TransactionItem,
@@ -27,6 +35,75 @@ from app.models.customer import Customer
 from app.models.user import User
 
 router = APIRouter()
+
+
+# --- Public checkout (no auth): create and get ---
+@router.post(
+    "/checkout",
+    response_model=CheckoutResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Create checkout (no auth)",
+    description="Create a checkout: get payment details for a due installment (amount, Stripe client_secret, payment_intent_id). Identify customer by email or customer_id. No auth token required.",
+    tags=["payments"],
+)
+async def create_checkout(
+    data: CheckoutRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create checkout: returns payment details and Stripe PaymentIntent client_secret for client-side payment form."""
+    service = PaymentService(db)
+    result = await service.get_checkout(
+        loan_id=data.loan_id,
+        payment_type=data.payment_type,
+        due_date_iso=data.due_date_iso,
+        email=data.email,
+        customer_id=data.customer_id,
+    )
+    return CheckoutResponse(**result)
+
+
+@router.get(
+    "/checkout/{payment_intent_id}",
+    response_model=GetCheckoutResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get checkout (no auth)",
+    description="Get checkout details by Stripe PaymentIntent ID (e.g. to poll status or re-display). Returns amount, status, client_secret, and metadata. No auth token required.",
+    tags=["payments"],
+)
+async def get_checkout(
+    payment_intent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get checkout by payment_intent_id (from create checkout response). Use to check status (e.g. succeeded) or re-use client_secret."""
+    service = PaymentService(db)
+    result = await service.get_checkout_by_payment_intent_id(payment_intent_id)
+    return GetCheckoutResponse(**result)
+
+
+# --- Public payment (no auth): confirm PaymentIntent with card token ---
+@router.post(
+    "/pay",
+    response_model=MakePaymentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Confirm payment (no auth)",
+    description="Confirm payment using payment_intent_id from checkout and card_token (Stripe PaymentMethod/token). No auth token required.",
+    tags=["payments"],
+)
+async def confirm_payment(
+    data: PublicPaymentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm Stripe PaymentIntent with card; records payment and returns transaction."""
+    service = PaymentService(db)
+    result = await service.confirm_public_payment(
+        payment_intent_id=data.payment_intent_id,
+        card_token=data.card_token,
+    )
+    return MakePaymentResponse(
+        success=result["success"],
+        message=result["message"],
+        transaction=result.get("transaction"),
+    )
 
 
 # --- Make Payment (customer, card token) ---
@@ -150,6 +227,34 @@ async def record_manual_payment(
     return transaction
 
 
+# --- Admin: bulk email + notification to customers with overdue payments ---
+@router.post(
+    "/bulk-overdue-reminder",
+    response_model=BulkOverdueReminderResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Bulk overdue reminder (admin)",
+    description="Send email and push notification to all customers who have at least one overdue payment. Optional custom subject/body for email and title/body for notification.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def bulk_overdue_reminder(
+    data: BulkOverdueReminderRequest | None = None,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send bulk email and push notification to all customers with overdue installments."""
+    if data is None:
+        data = BulkOverdueReminderRequest()
+    service = PaymentService(db)
+    result = await service.send_bulk_overdue_reminder(
+        email_subject=data.email_subject,
+        email_body_override=data.email_body_override,
+        notification_title=data.notification_title,
+        notification_body=data.notification_body,
+    )
+    return BulkOverdueReminderResponse(**result)
+
+
 # --- Admin: update payment status (triggers Payment Confirmed notification) ---
 @router.patch(
     "/{payment_id}/status",
@@ -172,6 +277,72 @@ async def update_payment_status(
     if not updated:
         AppException().raise_404("Payment not found")
     return updated
+
+
+# --- Admin: Customers with dues (for create checkout) ---
+@router.get(
+    "/due-customers",
+    response_model=DueCustomersResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List customers with due payments (admin)",
+    description="List customers who have unpaid dues, with loan_id, email, and next due. Use each item to call create checkout (POST /checkout) with loan_id and email or customer_id, payment_type=next or due.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def due_customers(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    loan_id: Optional[UUID] = Query(None, description="Filter by loan ID"),
+    search: Optional[str] = Query(None, description="Search by customer name, email, or phone"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """List customers with at least one unpaid due; includes everything needed for create checkout."""
+    service = PaymentService(db)
+    items, total = await service.list_due_customers_admin(
+        customer_id=customer_id,
+        loan_id=loan_id,
+        search=search,
+        skip=skip,
+        limit=limit,
+    )
+    return DueCustomersResponse(items=items, total=total)
+
+
+# --- Admin: List due installments (for create checkout per due) ---
+@router.get(
+    "/due-installments",
+    response_model=DueInstallmentsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List due installments (admin)",
+    description="List every unpaid due installment with loan_id, customer, due_date_iso, amount. Use each item to call create checkout (POST /checkout) with loan_id, email or customer_id, payment_type=due, due_date_iso.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def due_installments(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    loan_id: Optional[UUID] = Query(None, description="Filter by loan ID"),
+    search: Optional[str] = Query(None, description="Search by customer name, email, or phone"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """List all unpaid due installments with fields needed for create checkout (payment_type=due, due_date_iso)."""
+    service = PaymentService(db)
+    items, total, total_amount = await service.list_due_installments_admin(
+        customer_id=customer_id,
+        loan_id=loan_id,
+        search=search,
+        skip=skip,
+        limit=limit,
+    )
+    return DueInstallmentsResponse(
+        items=items,
+        total=total,
+        total_amount=round(total_amount, 2),
+    )
 
 
 # --- Admin: Payment Summary (paid, unpaid, overdue, totals, search) ---
