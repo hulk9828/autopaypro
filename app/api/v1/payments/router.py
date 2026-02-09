@@ -37,20 +37,22 @@ from app.models.user import User
 router = APIRouter()
 
 
-# --- Public checkout (no auth): create and get ---
+# --- Checkout: create (admin only) and get (public) ---
 @router.post(
     "/checkout",
     response_model=CheckoutResponse,
     status_code=status.HTTP_200_OK,
-    summary="Create checkout (no auth)",
-    description="Create a checkout: get payment details for a due installment (amount, Stripe client_secret, payment_intent_id). Identify customer by email or customer_id. No auth token required.",
+    summary="Create checkout (admin)",
+    description="Create a checkout: get payment details for a due installment (amount, Stripe client_secret, payment_intent_id). Identify customer by email or customer_id. JWT protected, admin only.",
     tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
 )
 async def create_checkout(
     data: CheckoutRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create checkout: returns payment details and Stripe PaymentIntent client_secret for client-side payment form."""
+    """Create checkout (admin only): returns payment details and Stripe PaymentIntent client_secret for client-side payment form."""
     service = PaymentService(db)
     result = await service.get_checkout(
         loan_id=data.loan_id,

@@ -94,12 +94,12 @@ class PaymentService:
         today = date.today()
         from_date = today
         to_date = today + timedelta(days=365 * 2)
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                from_date,
-                to_date,
-            )
+        due_dates = _get_bi_weekly_due_dates_range(
+            loan.created_at,
+            loan.loan_term_months,
+            from_date,
+            to_date,
+        )
         paid = await self._get_paid_due_dates_for_loan(loan_id)
         for due_dt in due_dates:
             if due_dt.date() not in paid:
