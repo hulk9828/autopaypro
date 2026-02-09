@@ -9,6 +9,7 @@ from app.api.v1.calendar.schemas import (
     PaidCalendarItem,
     PaymentCalendarResponse,
 )
+from app.core.utils import ensure_non_negative_amount
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment
@@ -61,7 +62,7 @@ class CalendarService:
                 customer_id=p.customer_id,
                 customer_name=f"{c.first_name} {c.last_name}",
                 due_date=p.due_date,
-                amount=p.amount,
+                amount=ensure_non_negative_amount(p.amount),
                 vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
                 payment_id=p.id,
                 payment_date=p.payment_date,
@@ -107,7 +108,7 @@ class CalendarService:
                     customer_id=loan.customer_id,
                     customer_name=customer_name,
                     due_date=due_dt,
-                    amount=loan.bi_weekly_payment_amount,
+                    amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                     vehicle_display=vehicle_display,
                 )
                 if due_d == target_date:

@@ -1,7 +1,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile, status, Query
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
 
@@ -108,20 +108,46 @@ async def get_customer_profile(
     response_model=CustomerProfileResponse,
     status_code=status.HTTP_200_OK,
     summary="Update customer profile",
-    description="Update current customer profile (name, phone, email, address, etc.).",
-    tags=["customer"]
+    description="Update current customer profile via multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (uploaded to S3, URL saved on customer).",
+    tags=["customer"],
 )
 async def update_customer_profile(
-    data: CustomerProfileUpdate,
     current_customer: Customer = Depends(get_current_customer),
     db: AsyncSession = Depends(get_db),
+    first_name: Optional[str] = Form(None),
+    last_name: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    driver_license_number: Optional[str] = Form(None),
+    employer_name: Optional[str] = Form(None),
+    device_token: Optional[str] = Form(None),
+    profile_pic: Optional[UploadFile] = File(None, description="Profile image (JPEG, PNG, WebP, GIF). Uploaded to S3; URL saved on customer."),
 ):
-    """Update the current customer's profile. At least one field can be provided."""
+    """Update the current customer's profile. Send as multipart/form-data. Optional text fields + optional profile image file."""
     customer_service = CustomerService(db)
     customer = await customer_service.get_customer_profile(current_customer.id)
     if not customer:
         AppException().raise_404("Customer not found")
+    data = CustomerProfileUpdate(
+        first_name=first_name,
+        last_name=last_name,
+        phone=phone,
+        email=email,
+        address=address,
+        driver_license_number=driver_license_number,
+        employer_name=employer_name,
+        device_token=device_token,
+        profile_pic=None,
+    )
     updated = await customer_service.update_customer_profile(customer, data)
+    if profile_pic and profile_pic.filename:
+        if not profile_pic.content_type or not profile_pic.content_type.startswith("image/"):
+            AppException().raise_400("Profile image must be an image (JPEG, PNG, WebP, or GIF)")
+        content = await profile_pic.read()
+        if not content:
+            AppException().raise_400("Profile image file is empty")
+        updated = await customer_service.upload_profile_photo(updated, content, profile_pic.content_type)
     return CustomerProfileResponse.model_validate(updated)
 
 
@@ -172,6 +198,56 @@ async def get_customer_by_id(
     return customer_detail
 
 
+@router.patch(
+    "/{customer_id}",
+    response_model=CustomerProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update customer profile (admin)",
+    description="Update a customer's profile via multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (uploaded to S3, URL saved on customer).",
+    tags=["admin-customers"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def admin_update_customer_profile(
+    customer_id: UUID,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    first_name: Optional[str] = Form(None),
+    last_name: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    driver_license_number: Optional[str] = Form(None),
+    employer_name: Optional[str] = Form(None),
+    device_token: Optional[str] = Form(None),
+    profile_pic: Optional[UploadFile] = File(None, description="Profile image (JPEG, PNG, WebP, GIF). Uploaded to S3; URL saved on customer."),
+):
+    """Admin: update a customer's profile by customer_id. Send as multipart/form-data. Optional text fields + optional profile image file."""
+    customer_service = CustomerService(db)
+    customer = await customer_service.get_customer_profile(customer_id)
+    if not customer:
+        AppException().raise_404("Customer not found")
+    data = CustomerProfileUpdate(
+        first_name=first_name,
+        last_name=last_name,
+        phone=phone,
+        email=email,
+        address=address,
+        driver_license_number=driver_license_number,
+        employer_name=employer_name,
+        device_token=device_token,
+        profile_pic=None,
+    )
+    updated = await customer_service.update_customer_profile(customer, data)
+    if profile_pic and profile_pic.filename:
+        if not profile_pic.content_type or not profile_pic.content_type.startswith("image/"):
+            AppException().raise_400("Profile image must be an image (JPEG, PNG, WebP, or GIF)")
+        content = await profile_pic.read()
+        if not content:
+            AppException().raise_400("Profile image file is empty")
+        updated = await customer_service.upload_profile_photo(updated, content, profile_pic.content_type)
+    return CustomerProfileResponse.model_validate(updated)
+
+
 @router.post(
     "/",
     response_model=CustomerResponse,
@@ -190,7 +266,7 @@ async def create_customer(
     customer_service = CustomerService(db)
     new_customer = await customer_service.create_customer_and_loan(customer_data)
     return CustomerResponse.model_validate(new_customer)
-
+ 
 
 # ============================================================
 # CUSTOMER ENDPOINTS (Customer-facing, some require authentication)

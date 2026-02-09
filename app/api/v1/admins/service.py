@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 from uuid import UUID
 
@@ -6,6 +7,7 @@ from sqlalchemy import select
 
 from app.api.v1.admins.schemas import AdminCreate, AdminLogin, AdminProfileUpdate, AdminChangePassword
 from app.core.exceptions import AppException
+from app.core import s3 as s3_module
 from app.models.admin import Admin
 from app.core.security import get_password_hash, verify_password
 from app.models.enums import Role
@@ -76,6 +78,20 @@ class AdminService:
             admin.profile_pic = data.profile_pic.strip() or None
         if data.device_token is not None:
             admin.device_token = data.device_token.strip() or None
+        self.db.add(admin)
+        await self.db.commit()
+        await self.db.refresh(admin)
+        return admin
+
+    async def upload_profile_photo(self, admin: Admin, file_content: bytes, content_type: str) -> Admin:
+        """Upload profile photo to S3 and set admin.profile_pic to the URL."""
+        url = await asyncio.to_thread(
+            s3_module.upload_admin_profile_photo,
+            file_content,
+            str(admin.id),
+            content_type,
+        )
+        admin.profile_pic = url
         self.db.add(admin)
         await self.db.commit()
         await self.db.refresh(admin)

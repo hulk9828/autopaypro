@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -133,6 +133,10 @@ class VehicleLoanInfo(BaseModel):
     loan_end_date: datetime
     next_payment_due_date: datetime
     payments_remaining: int
+    loan_status: Literal["open", "closed"] = Field(
+        default="open",
+        description="open = loan active; closed = loan fully paid",
+    )
 
     class Config:
         from_attributes = True
@@ -165,6 +169,10 @@ class LoanDetail(BaseModel):
     interest_rate: float
     created_at: datetime
     next_payment_due_date: Optional[datetime] = None
+    loan_status: Literal["open", "closed"] = Field(
+        default="open",
+        description="open = loan active; closed = loan fully paid",
+    )
 
     class Config:
         from_attributes = True

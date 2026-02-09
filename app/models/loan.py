@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -20,6 +20,7 @@ class Loan(Base):
     bi_weekly_payment_amount = Column(Float, nullable=False)
     loan_term_months = Column(Float, nullable=False)
     interest_rate = Column(Float, nullable=False)
+    status = Column(String(20), default="active", nullable=False)  # active | closed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

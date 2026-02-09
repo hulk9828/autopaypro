@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_async_session_maker_instance
 from app.core.loan_schedule import get_bi_weekly_due_dates_range
+from app.core.utils import ensure_non_negative_amount
 from app.core.notification_service import (
     scope_key_for_loan_due,
     send_payment_notification,
@@ -74,7 +75,7 @@ async def check_and_send_payment_notifications() -> None:
                             notification_type="due_tomorrow",
                             scope_key=scope_key,
                             title="Payment due tomorrow",
-                            body=f"Your payment of ${loan.bi_weekly_payment_amount:.2f} is due tomorrow.",
+                            body=f"Your payment of ${ensure_non_negative_amount(loan.bi_weekly_payment_amount):.2f} is due tomorrow.",
                         )
                         if ok:
                             sent_due_tomorrow += 1
@@ -96,7 +97,7 @@ async def check_and_send_payment_notifications() -> None:
                             notification_type="overdue",
                             scope_key=scope_key,
                             title="Payment overdue",
-                            body=f"Your payment of ${loan.bi_weekly_payment_amount:.2f} was due on {due_dt.date()} and is now overdue.",
+                            body=f"Your payment of ${ensure_non_negative_amount(loan.bi_weekly_payment_amount):.2f} was due on {due_dt.date()} and is now overdue.",
                         )
                         if ok:
                             sent_overdue += 1

@@ -18,6 +18,7 @@ from app.models.loan import Loan
 from app.models.payment import Payment
 from app.models.vehicle import Vehicle
 from app.models.enums import AccountStatus
+from app.core.utils import ensure_non_negative_amount
 
 
 class DashboardService:
@@ -172,7 +173,7 @@ class DashboardService:
                     customer_id=payment.customer_id,
                     customer_name=customer_name,
                     payment_date=payment.payment_date,
-                    amount=payment.amount,
+                    amount=ensure_non_negative_amount(payment.amount),
                     payment_method=payment.payment_method,
                     status=payment.status,
                     vehicle_display=vehicle_display,
@@ -220,7 +221,7 @@ class DashboardService:
                             customer_name=customer_name,
                             loan_id=loan.id,
                             due_date=next_due_date,
-                            overdue_amount=loan.bi_weekly_payment_amount,
+                            overdue_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                             days_overdue=days_overdue
                         )
                     )
@@ -272,7 +273,7 @@ class DashboardService:
                             customer_name=customer_name,
                             loan_id=loan.id,
                             due_date=next_due_date,
-                            payment_amount=loan.bi_weekly_payment_amount,
+                            payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                             days_until_due=days_until_due
                         )
                     )

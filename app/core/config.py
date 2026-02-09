@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     S3_BUCKET_NAME: str = ""
     S3_CUSTOMER_PROFILE_PREFIX: str = "customer-profiles"
+    S3_ADMIN_PROFILE_PREFIX: str = "admin-profiles"
 
     # Stripe – from .env: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_CURRENCY
     STRIPE_SECRET_KEY: str = ""

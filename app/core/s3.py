@@ -89,3 +89,41 @@ def upload_customer_profile_photo(
     # Public URL (bucket must allow public read for this prefix, or use CloudFront)
     url = f"https://{bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{key}"
     return url
+
+
+def upload_admin_profile_photo(
+    file_content: bytes,
+    admin_id: str,
+    content_type: str,
+    original_filename: Optional[str] = None,
+) -> str:
+    """
+    Upload admin profile photo to S3. Returns the public URL of the object.
+    Same validation as customer (size, type). Key: S3_ADMIN_PROFILE_PREFIX/admin_id/uuid.ext.
+    """
+    if len(file_content) > PROFILE_PHOTO_MAX_BYTES:
+        AppException().raise_400(
+            f"File too large. Maximum size is {PROFILE_PHOTO_MAX_BYTES // (1024 * 1024)} MB."
+        )
+    if content_type not in ALLOWED_CONTENT_TYPES:
+        AppException().raise_400(
+            f"Invalid file type. Allowed: {', '.join(ALLOWED_CONTENT_TYPES)}"
+        )
+    prefix = getattr(settings, "S3_ADMIN_PROFILE_PREFIX", "admin-profiles")
+    ext = EXT_BY_CONTENT_TYPE.get(content_type, ".jpg")
+    key = f"{prefix}/{admin_id}/{uuid.uuid4().hex}{ext}"
+    client = _get_s3_client()
+    bucket = settings.S3_BUCKET_NAME
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=file_content,
+            ContentType=content_type,
+            CacheControl="max-age=31536000",
+        )
+    except Exception as e:
+        logger.exception("S3 upload failed: %s", e)
+        AppException().raise_500("Failed to upload photo. Please try again.")
+    url = f"https://{bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{key}"
+    return url

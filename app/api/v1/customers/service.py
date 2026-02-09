@@ -23,6 +23,7 @@ from app.api.v1.customers.schemas import (
     CustomerProfileUpdate,
 )
 from app.core.exceptions import AppException
+from app.core.utils import ensure_non_negative_amount
 from app.models.customer import Customer
 from app.models.vehicle import Vehicle
 from app.models.customer_vehicle import CustomerVehicle
@@ -129,32 +130,44 @@ class CustomerService:
             self.db.add(customer_vehicle)
             await self.db.flush()
 
-            # Calculate amount financed (simple example: purchase price - down payment)
+            # Calculate amount financed (purchase price - down payment)
             amount_financed = vehicle_purchase.purchase_price - vehicle_purchase.down_payment
+            if amount_financed < 0:
+                AppException().raise_400(
+                    "Down payment must be less than purchase price"
+                )
+            amount_financed = ensure_non_negative_amount(amount_financed)
 
-            # Validate loan term
-            if vehicle_purchase.loan_term_months <= 0:
-                AppException().raise_400(f"Loan term must be greater than 0 months for vehicle {vehicle_purchase.vehicle_id}")
-            
-            # Calculate bi-weekly payment (a simplified calculation for demonstration)
-            # This is a very basic approximation. Real loan calculations are more complex.
-            # P = L [i(1 + i)^n] / [(1 + i)^n – 1]
-            # Where P = payment, L = loan amount, i = interest rate per period, n = number of payments
-
-            # Convert annual interest rate to bi-weekly
-            bi_weekly_interest_rate = (vehicle_purchase.interest_rate / 100) / 26
-            # Number of bi-weekly payments
-            num_payments = vehicle_purchase.loan_term_months * 2
-
-            if num_payments <= 0:
-                AppException().raise_400(f"Number of payments must be greater than 0 for vehicle {vehicle_purchase.vehicle_id}")
-
-            if bi_weekly_interest_rate > 0:
-                bi_weekly_payment_amount = (amount_financed * bi_weekly_interest_rate * (1 + bi_weekly_interest_rate)**num_payments) / (((1 + bi_weekly_interest_rate)**num_payments) - 1)
+            # When purchase_price == down_payment: no timeline needed, loan is closed with zero payment
+            if amount_financed == 0:
+                bi_weekly_payment_amount = 0.0
+                loan_term_months = 0.0
             else:
-                bi_weekly_payment_amount = amount_financed / num_payments # Handle zero interest rate
+                # Validate loan term when there is an amount to finance
+                if vehicle_purchase.loan_term_months <= 0:
+                    AppException().raise_400(
+                        f"Loan term must be greater than 0 months for vehicle {vehicle_purchase.vehicle_id}"
+                    )
+                # Calculate bi-weekly payment
+                # P = L [i(1 + i)^n] / [(1 + i)^n – 1]
+                bi_weekly_interest_rate = (vehicle_purchase.interest_rate / 100) / 26
+                num_payments = vehicle_purchase.loan_term_months * 2
+                if num_payments <= 0:
+                    AppException().raise_400(
+                        f"Number of payments must be greater than 0 for vehicle {vehicle_purchase.vehicle_id}"
+                    )
+                if bi_weekly_interest_rate > 0:
+                    bi_weekly_payment_amount = (
+                        amount_financed
+                        * bi_weekly_interest_rate
+                        * (1 + bi_weekly_interest_rate) ** num_payments
+                    ) / (((1 + bi_weekly_interest_rate) ** num_payments) - 1)
+                else:
+                    bi_weekly_payment_amount = amount_financed / num_payments
+                bi_weekly_payment_amount = ensure_non_negative_amount(bi_weekly_payment_amount)
+                loan_term_months = float(vehicle_purchase.loan_term_months)
 
-            # Create loan
+            # Create loan (closed when amount_financed is zero)
             loan = Loan(
                 id=uuid.uuid4(),
                 customer_id=new_customer.id,
@@ -163,8 +176,9 @@ class CustomerService:
                 down_payment=vehicle_purchase.down_payment,
                 amount_financed=amount_financed,
                 bi_weekly_payment_amount=bi_weekly_payment_amount,
-                loan_term_months=vehicle_purchase.loan_term_months,
+                loan_term_months=loan_term_months,
                 interest_rate=vehicle_purchase.interest_rate,
+                status="closed" if amount_financed == 0 else "active",
             )
             self.db.add(loan)
             await self.db.flush()
@@ -185,7 +199,7 @@ class CustomerService:
             self.logger.warning(f"Failed to send password email to {new_customer.email}, but customer was created successfully")
         
         return new_customer
-
+ 
     async def authenticate_customer(self, customer_login_data: CustomerLogin) -> Optional[Customer]:
         """
         Authenticate a customer using email and password.
@@ -462,7 +476,8 @@ class CustomerService:
             payments_remaining = max(0, total_payments - payments_made)
             if earliest_next_due is None or (next_payment_due_date and next_payment_due_date < earliest_next_due):
                 earliest_next_due = next_payment_due_date
-                next_payment_amount = loan.bi_weekly_payment_amount
+                next_payment_amount = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
             vehicle_info = VehicleLoanInfo(
                 vehicle_id=vehicle.id,
                 loan_id=loan.id,
@@ -472,17 +487,18 @@ class CustomerService:
                 year=vehicle.year,
                 color=vehicle.color,
                 mileage=vehicle.mileage,
-                total_purchase_price=loan.total_purchase_price,
-                down_payment=loan.down_payment,
-                amount_financed=loan.amount_financed,
-                bi_weekly_payment_amount=loan.bi_weekly_payment_amount,
+                total_purchase_price=ensure_non_negative_amount(loan.total_purchase_price),
+                down_payment=ensure_non_negative_amount(loan.down_payment),
+                amount_financed=ensure_non_negative_amount(loan.amount_financed),
+                bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                 remaining_balance=remaining_balance,
                 loan_term_months=loan.loan_term_months,
                 interest_rate=loan.interest_rate,
                 loan_start_date=loan_start_date,
                 loan_end_date=loan_end_date,
                 next_payment_due_date=next_payment_due_date,
-                payments_remaining=payments_remaining
+                payments_remaining=payments_remaining,
+                loan_status=loan_status,
             )
             vehicles_info.append(vehicle_info)
             total_remaining_balance += remaining_balance
@@ -494,7 +510,7 @@ class CustomerService:
             total_vehicles=len(vehicles_info),
             total_remaining_balance=total_remaining_balance,
             next_payment_due_date=earliest_next_due,
-            next_payment_amount=next_payment_amount,
+            next_payment_amount=ensure_non_negative_amount(next_payment_amount) if next_payment_amount is not None else None,
             vehicles=vehicles_info
         )
 
@@ -720,7 +736,8 @@ class CustomerService:
             next_due = await self._get_next_payment_due_date(loan)
             if earliest_next_due is None or (next_due and next_due < earliest_next_due):
                 earliest_next_due = next_due
-                next_payment_amount_val = loan.bi_weekly_payment_amount
+                next_payment_amount_val = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
             loan_detail = LoanDetail(
                 loan_id=loan.id,
                 vehicle_id=vehicle.id,
@@ -728,14 +745,15 @@ class CustomerService:
                 vehicle_make=vehicle.make,
                 vehicle_model=vehicle.model,
                 vehicle_year=vehicle.year,
-                total_purchase_price=loan.total_purchase_price,
-                down_payment=loan.down_payment,
-                amount_financed=loan.amount_financed,
-                bi_weekly_payment_amount=loan.bi_weekly_payment_amount,
+                total_purchase_price=ensure_non_negative_amount(loan.total_purchase_price),
+                down_payment=ensure_non_negative_amount(loan.down_payment),
+                amount_financed=ensure_non_negative_amount(loan.amount_financed),
+                bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                 loan_term_months=loan.loan_term_months,
                 interest_rate=loan.interest_rate,
                 created_at=loan.created_at,
-                next_payment_due_date=next_due
+                next_payment_due_date=next_due,
+                loan_status=loan_status,
             )
             loan_details.append(loan_detail)
         return CustomerDetailResponse(
@@ -752,6 +770,6 @@ class CustomerService:
             updated_at=customer.updated_at,
             total_loans=len(loan_details),
             next_payment_due_date=earliest_next_due,
-            next_payment_amount=next_payment_amount_val,
+            next_payment_amount=ensure_non_negative_amount(next_payment_amount_val) if next_payment_amount_val is not None else None,
             loans=loan_details
         )

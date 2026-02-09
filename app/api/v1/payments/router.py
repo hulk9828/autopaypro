@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 from app.api.v1.payments.schemas import (
     AdminTransactionHistoryResponse,
-    BulkOverdueReminderRequest,
     BulkOverdueReminderResponse,
     CheckoutRequest,
     CheckoutResponse,
@@ -21,12 +20,15 @@ from app.api.v1.payments.schemas import (
     MakePaymentResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
+    PaymentReceiptResponse,
     PaymentSummaryResponse,
     PublicPaymentRequest,
     RecordManualPaymentRequest,
     TransactionHistoryResponse,
     TransactionItem,
     UpdatePaymentStatusRequest,
+    WaiveOverdueRequest,
+    WaiveOverdueByCustomerRequest,
 )
 from app.api.v1.payments.service import PaymentService
 from app.core.deps import get_db, get_current_active_admin_user, get_current_customer
@@ -197,6 +199,28 @@ async def my_transaction_history(
     return TransactionHistoryResponse(items=items, total=total)
 
 
+# --- Customer: Get my receipt for a payment ---
+@router.get(
+    "/my-receipt/{payment_id}",
+    response_model=PaymentReceiptResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get my payment receipt (customer)",
+    description="Get receipt data for one of your payments. Customer can only access their own receipts.",
+    tags=["payments"],
+)
+async def my_payment_receipt(
+    payment_id: UUID,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns receipt data for the given payment ID (only if it belongs to the current customer)."""
+    service = PaymentService(db)
+    receipt = await service.get_receipt_for_customer(payment_id, current_customer.id)
+    if not receipt:
+        AppException().raise_404("Payment not found or you do not have access to this receipt")
+    return PaymentReceiptResponse(**receipt)
+
+
 # --- Admin: record manual payment ---
 @router.post(
     "/record-manual",
@@ -229,31 +253,80 @@ async def record_manual_payment(
     return transaction
 
 
+# --- Admin: waive overdue installment ---
+@router.post(
+    "/waive-overdue",
+    response_model=TransactionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Waive overdue installment (admin)",
+    description="Waive an unpaid installment for a loan. Creates a zero-amount completed payment marked as waived; the due is then considered satisfied.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def waive_overdue_installment(
+    data: WaiveOverdueRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Waive one overdue (or any unpaid) installment: loan_id + due_date_iso. Optional note for the waiver."""
+    service = PaymentService(db)
+    result = await service.waive_overdue_installment_admin(
+        loan_id=data.loan_id,
+        due_date_iso=data.due_date_iso,
+        note=data.note,
+    )
+    if not result:
+        AppException().raise_400(
+            "Invalid or already paid/waived due date. Check loan_id and due_date_iso (must be a scheduled unpaid installment)."
+        )
+    return result
+
+
+@router.post(
+    "/waive-overdue-by-customer",
+    response_model=TransactionItem,
+    status_code=status.HTTP_200_OK,
+    summary="Waive earliest overdue by customer and loan (admin)",
+    description="Waive the earliest overdue installment for a customer's loan. Send customer_id and loan_id; the oldest unpaid overdue due is waived.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def waive_overdue_by_customer(
+    data: WaiveOverdueByCustomerRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Waive the earliest overdue payment for the given customer_id and loan_id."""
+    service = PaymentService(db)
+    result = await service.waive_earliest_overdue_by_customer_loan(
+        customer_id=data.customer_id,
+        loan_id=data.loan_id,
+        note=data.note,
+    )
+    if not result:
+        AppException().raise_400(
+            "No overdue installment found for this customer and loan, or loan does not belong to customer, or loan is closed."
+        )
+    return result
+
+
 # --- Admin: bulk email + notification to customers with overdue payments ---
 @router.post(
     "/bulk-overdue-reminder",
     response_model=BulkOverdueReminderResponse,
     status_code=status.HTTP_200_OK,
     summary="Bulk overdue reminder (admin)",
-    description="Send email and push notification to all customers who have at least one overdue payment. Optional custom subject/body for email and title/body for notification.",
+    description="Send default overdue alert email and push notification to all customers who have at least one overdue payment. No request body; uses default message.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
 async def bulk_overdue_reminder(
-    data: BulkOverdueReminderRequest | None = None,
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Send bulk email and push notification to all customers with overdue installments."""
-    if data is None:
-        data = BulkOverdueReminderRequest()
+    """Send bulk email and push notification to all customers with overdue installments (default overdue alert message)."""
     service = PaymentService(db)
-    result = await service.send_bulk_overdue_reminder(
-        email_subject=data.email_subject,
-        email_body_override=data.email_body_override,
-        notification_title=data.notification_title,
-        notification_body=data.notification_body,
-    )
+    result = await service.send_bulk_overdue_reminder()
     return BulkOverdueReminderResponse(**result)
 
 
@@ -279,6 +352,29 @@ async def update_payment_status(
     if not updated:
         AppException().raise_404("Payment not found")
     return updated
+
+
+# --- Admin: Get receipt for a payment ---
+@router.get(
+    "/{payment_id}/receipt",
+    response_model=PaymentReceiptResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get payment receipt (admin)",
+    description="Get receipt data for a payment (customer, amount, date, vehicle, etc.) for display or print. Admin only.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def get_payment_receipt(
+    payment_id: UUID,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns receipt data for the given payment ID."""
+    service = PaymentService(db)
+    receipt = await service.get_receipt_for_payment(payment_id)
+    if not receipt:
+        AppException().raise_404("Payment not found")
+    return PaymentReceiptResponse(**receipt)
 
 
 # --- Admin: Customers with dues (for create checkout) ---
@@ -372,9 +468,7 @@ async def payment_summary(
         search=search,
     )
     return PaymentSummaryResponse(
-        paid_dues=data["paid_dues"],
-        unpaid_dues=data["unpaid_dues"],
-        overdue_payments=data["overdue_payments"],
+        items=data["items"],
         total_collected_amount=round(data["total_collected_amount"], 2),
         pending_amount=round(data["pending_amount"], 2),
         overdue_amount=round(data["overdue_amount"], 2),

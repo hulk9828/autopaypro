@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.sales.schemas import (
@@ -77,3 +78,28 @@ async def list_sales(
     """List sales with dashboard summary. Search by customer or vehicle; filter by customer_id if provided."""
     service = SaleService(db)
     return await service.get_sales(customer_id=customer_id, search=search)
+
+
+@router.get(
+    "/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export sales to Excel",
+    description="Download sales data as an Excel (.xlsx) file. Same filters as list: customer_id, search.",
+    tags=["sales"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def export_sales_excel(
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    search: Optional[str] = Query(None, description="Search by customer name or vehicle (make, model, year)"),
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export sales data to Excel (.xlsx). Admin only."""
+    service = SaleService(db)
+    content = await service.export_sales_to_excel(customer_id=customer_id, search=search)
+    filename = "sales_export.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

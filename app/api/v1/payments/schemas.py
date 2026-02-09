@@ -7,6 +7,31 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 
 
+# --- Receipt (payment receipt data for display/print) ---
+class PaymentReceiptResponse(BaseModel):
+    """Receipt data for a completed payment. Use for display or print."""
+    receipt_number: str = Field(..., description="Unique receipt identifier (e.g. RCP-xxx)")
+    payment_id: UUID = Field(..., description="Payment ID")
+    company_name: str = Field(default="AutoLoanPro", description="Company name for receipt header")
+    customer_name: str = Field(..., description="Customer full name")
+    customer_email: str | None = Field(None, description="Customer email")
+    customer_phone: str | None = Field(None, description="Customer phone")
+    amount: float = Field(..., description="Amount paid")
+    currency: str = Field(default="usd", description="Currency code")
+    payment_method: str = Field(..., description="Payment method (card, cash, etc.)")
+    payment_date: datetime = Field(..., description="Date and time of payment")
+    due_date: datetime = Field(..., description="Due date this payment was for")
+    status: str = Field(..., description="Payment status (e.g. completed)")
+    loan_id: UUID = Field(..., description="Loan ID")
+    vehicle_display: str | None = Field(None, description="Vehicle (year make model)")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
+    note: str | None = Field(None, description="Optional note (e.g. for manual payments)")
+    created_at: datetime | None = Field(None, description="Record created at")
+
+
 # --- Transaction (single record) - defined first so MakePaymentResponse can reference it ---
 class TransactionItem(BaseModel):
     """Single transaction/payment record for history."""
@@ -21,6 +46,10 @@ class TransactionItem(BaseModel):
     payment_date: datetime
     due_date: datetime
     created_at: datetime | None = None
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
     class Config:
         from_attributes = True
@@ -102,6 +131,10 @@ class CheckoutResponse(BaseModel):
     vehicle_display: str | None = Field(None, description="Vehicle description (year make model)")
     loan_id: UUID = Field(..., description="Loan ID")
     customer_id: UUID = Field(..., description="Customer ID")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 class GetCheckoutResponse(BaseModel):
@@ -117,6 +150,10 @@ class GetCheckoutResponse(BaseModel):
     vehicle_display: str | None = Field(None, description="Vehicle description")
     loan_id: UUID | None = Field(None, description="Loan ID from metadata")
     customer_id: UUID | None = Field(None, description="Customer ID from metadata")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 # --- Public payment (no auth): confirm with card_token using payment_intent_id from checkout ---
@@ -161,6 +198,21 @@ class BulkOverdueReminderResponse(BaseModel):
     notifications_sent: int = Field(..., description="Push notifications delivered")
     no_device_count: int = Field(..., description="Customers with no device token (app not installed / no token)")
     notifications_failed: int = Field(..., description="Push notifications that failed to send")
+
+
+# --- Admin: waive overdue installment ---
+class WaiveOverdueRequest(BaseModel):
+    """Admin waives an overdue (or any unpaid) installment for a loan. Creates a zero-amount completed payment marked as waived."""
+    loan_id: UUID = Field(..., description="Loan ID")
+    due_date_iso: str = Field(..., description="Due date of the installment to waive (ISO date/datetime)")
+    note: str | None = Field(None, max_length=500, description="Optional reason or note for the waiver")
+
+
+class WaiveOverdueByCustomerRequest(BaseModel):
+    """Admin waives the earliest overdue installment for a customer's loan. Uses customer_id and loan_id only."""
+    customer_id: UUID = Field(..., description="Customer ID")
+    loan_id: UUID = Field(..., description="Loan ID (must belong to this customer)")
+    note: str | None = Field(None, max_length=500, description="Optional reason or note for the waiver")
 
 
 # --- Admin: record manual payment ---
@@ -211,6 +263,10 @@ class OverdueItem(BaseModel):
     due_date: datetime = Field(..., description="Scheduled due date that was missed")
     amount: float = Field(..., description="Bi-weekly payment amount due")
     days_overdue: int = Field(..., description="Days past due date")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 class OverduePaymentsResponse(BaseModel):
@@ -234,6 +290,10 @@ class DueCustomerItem(BaseModel):
     total_unpaid_amount: float = Field(..., description="Total amount due for this loan")
     next_due_date: datetime | None = Field(None, description="First unpaid due date")
     next_due_date_iso: str | None = Field(None, description="First unpaid due date ISO (for create checkout with payment_type=due)")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 class DueCustomersResponse(BaseModel):
@@ -256,6 +316,10 @@ class DueInstallmentItem(BaseModel):
     amount: float = Field(..., description="Amount due")
     days_overdue: int | None = Field(None, description="Days past due (if overdue)")
     days_until_due: int | None = Field(None, description="Days until due (if future)")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 class DueInstallmentsResponse(BaseModel):
@@ -278,13 +342,40 @@ class DueEntryItem(BaseModel):
     payment_id: UUID | None = Field(None, description="Payment id if paid")
     days_overdue: int | None = Field(None, description="Days past due (for overdue)")
     days_until_due: int | None = Field(None, description="Days until due (for unpaid)")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
+
+
+class PaymentSummaryItem(BaseModel):
+    """Single due/payment entry in the combined list with status: paid_dues | unpaid_dues | overdue_payments."""
+    payment_status: Literal["paid_dues", "unpaid_dues", "overdue_payments"] = Field(
+        ...,
+        description="paid_dues = payment done; unpaid_dues = future due; overdue_payments = past due not paid",
+    )
+    loan_id: UUID
+    customer_id: UUID
+    customer_name: str | None = None
+    vehicle_display: str | None = None
+    due_date: datetime = Field(..., description="Scheduled due date")
+    amount: float = Field(..., description="Installment amount")
+    payment_date: datetime | None = Field(None, description="When paid (for paid_dues)")
+    payment_id: UUID | None = Field(None, description="Payment id if paid")
+    days_overdue: int | None = Field(None, description="Days past due (for overdue_payments)")
+    days_until_due: int | None = Field(None, description="Days until due (for unpaid_dues)")
+    loan_status: Literal["active", "completed"] = Field(
+        default="active",
+        description="active = loan open; completed = loan fully paid (closed)",
+    )
 
 
 class PaymentSummaryResponse(BaseModel):
-    """Payment summary: paid dues, unpaid dues, overdue payments, totals, and search results."""
-    paid_dues: list[DueEntryItem] = Field(default_factory=list, description="Completed payments")
-    unpaid_dues: list[DueEntryItem] = Field(default_factory=list, description="Future installments not yet paid")
-    overdue_payments: list[DueEntryItem] = Field(default_factory=list, description="Past due installments not paid")
+    """Payment summary: single list of all dues with payment_status enum, plus totals."""
+    items: list[PaymentSummaryItem] = Field(
+        default_factory=list,
+        description="All dues in one list: payment_status = paid_dues | unpaid_dues | overdue_payments",
+    )
     total_collected_amount: float = Field(..., description="Sum of all completed payments")
     pending_amount: float = Field(..., description="Sum of future unpaid installments")
     overdue_amount: float = Field(..., description="Sum of overdue installments")

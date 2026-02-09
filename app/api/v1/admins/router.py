@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, status, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.admins.schemas import (
@@ -89,21 +91,37 @@ async def get_admin_profile(
     response_model=AdminProfileResponse,
     status_code=status.HTTP_200_OK,
     summary="Update admin profile",
-    description="Update current admin profile (email, phone).",
+    description="Update current admin profile via multipart/form-data. Optional: email, phone, device_token; optional profile_pic = image file (uploaded to S3, URL saved on admin).",
     tags=["admin-profile"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
 async def update_admin_profile(
-    data: AdminProfileUpdate,
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
+    email: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    device_token: Optional[str] = Form(None),
+    profile_pic: Optional[UploadFile] = File(None, description="Profile image (JPEG, PNG, WebP, GIF). Uploaded to S3; URL saved on admin."),
 ):
-    """Update the current admin's profile. At least one of email or phone can be provided."""
+    """Update the current admin's profile. Send as multipart/form-data. Optional text fields + optional profile image file."""
     service = AdminService(db)
     admin = await service.get_admin_profile(current_admin.id)
     if not admin:
         AppException().raise_404("Admin not found")
+    data = AdminProfileUpdate(
+        email=email,
+        phone=phone,
+        device_token=device_token,
+        profile_pic=None,
+    )
     updated = await service.update_admin_profile(admin, data)
+    if profile_pic and profile_pic.filename:
+        if not profile_pic.content_type or not profile_pic.content_type.startswith("image/"):
+            AppException().raise_400("Profile image must be an image (JPEG, PNG, WebP, or GIF)")
+        content = await profile_pic.read()
+        if not content:
+            AppException().raise_400("Profile image file is empty")
+        updated = await service.upload_profile_photo(updated, content, profile_pic.content_type)
     return AdminProfileResponse.model_validate(updated)
 
 
