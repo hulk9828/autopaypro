@@ -3,6 +3,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 
+import aiosmtplib
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
