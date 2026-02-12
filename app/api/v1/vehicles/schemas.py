@@ -15,8 +15,8 @@ class CreateVehicleRequest(BaseModel):
     color: Optional[str] = Field(None, description="Vehicle color")
     mileage: Optional[float] = Field(None, ge=0, description="Vehicle mileage")
     purchase_price: float = Field(..., gt=0, description="Purchase price of the vehicle")
-    sale_price: Optional[float] = Field(None, gt=0, description="Sale price of the vehicle")
-    status: Optional[str] = Field("available", description="Vehicle status (available/sold)")
+    lease_price: Optional[float] = Field(None, gt=0, description="Lease price of the vehicle")
+    status: Optional[str] = Field("available", description="Vehicle status (available/leased)")
     condition: Optional[str] = Field("good", description="Vehicle condition (bad/good/excellent)")
 
 
@@ -28,8 +28,8 @@ class UpdateVehicleRequest(BaseModel):
     color: Optional[str] = Field(None, description="Vehicle color")
     mileage: Optional[float] = Field(None, ge=0, description="Vehicle mileage")
     purchase_price: Optional[float] = Field(None, gt=0, description="Purchase price of the vehicle")
-    sale_price: Optional[float] = Field(None, gt=0, description="Sale price of the vehicle")
-    status: Optional[str] = Field(None, description="Vehicle status (available/sold)")
+    lease_price: Optional[float] = Field(None, gt=0, description="Lease price of the vehicle")
+    status: Optional[str] = Field(None, description="Vehicle status (available/leased)")
     condition: Optional[str] = Field(None, description="Vehicle condition (bad/good/excellent)")
 
 
@@ -42,7 +42,7 @@ class VehicleResponse(BaseModel):
     color: Optional[str]
     mileage: Optional[float]
     purchase_price: float
-    sale_price: Optional[float]
+    lease_price: Optional[float]
     status: str
     condition: str
     created_at: datetime

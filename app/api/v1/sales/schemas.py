@@ -7,58 +7,61 @@ from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
 
 
-class CreateSaleRequest(BaseModel):
-    """Request to create a new vehicle sale with loan terms."""
+class CreateLeaseRequest(BaseModel):
+    """Request to create a new vehicle lease with loan terms."""
     customer_id: UUID = Field(..., description="Existing customer ID")
     vehicle_id: UUID = Field(..., description="Available vehicle ID")
-    sale_amount: float = Field(..., gt=0, description="Total sale/purchase amount")
-    down_payment: float = Field(..., ge=0, description="Down payment amount")
-    term_months: int = Field(..., gt=0, le=360, description="Loan term in months")
-    interest_rate: float = Field(..., ge=0, le=100, description="Annual interest rate (%)")
+    lease_amount: float = Field(..., gt=0, description="Total lease/finance amount")
+    down_payment: float = Field(..., ge=0, description="Down payment / security deposit")
+    term_months: int = Field(..., gt=0, le=360, description="Lease term in months")
+    lease_payment_type: str = Field(
+        default="bi_weekly",
+        description="Payment frequency: bi_weekly, monthly, or semi_monthly",
+    )
 
     @model_validator(mode="after")
-    def down_payment_not_exceed_sale(self):
-        if self.down_payment >= self.sale_amount:
-            raise ValueError("Down payment must be less than sale amount")
+    def down_payment_not_exceed_lease(self):
+        if self.down_payment >= self.lease_amount:
+            raise ValueError("Down payment must be less than lease amount")
         return self
 
 
 class BiWeeklyEstimateRequest(BaseModel):
-    """Request to estimate bi-weekly payment without creating a sale."""
-    sale_amount: float = Field(..., gt=0)
+    """Request to estimate payment without creating a lease (no interest)."""
+    lease_amount: float = Field(..., gt=0)
     down_payment: float = Field(..., ge=0)
     term_months: int = Field(..., gt=0, le=360)
-    interest_rate: float = Field(..., ge=0, le=100)
+    lease_payment_type: str = Field(default="bi_weekly", description="bi_weekly, monthly, or semi_monthly")
 
     @model_validator(mode="after")
-    def down_payment_less_than_sale(self):
-        if self.down_payment >= self.sale_amount:
-            raise ValueError("Down payment must be less than sale amount")
+    def down_payment_less_than_lease(self):
+        if self.down_payment >= self.lease_amount:
+            raise ValueError("Down payment must be less than lease amount")
         return self
 
 
 class BiWeeklyEstimateResponse(BaseModel):
-    """Estimated bi-weekly payment response."""
-    sale_amount: float
+    """Estimated payment per due date (no interest)."""
+    lease_amount: float
     down_payment: float
     amount_financed: float
     term_months: int
-    interest_rate: float
-    estimated_bi_weekly_payment: float
+    lease_payment_type: str
+    estimated_payment_amount: float
 
 
-class SaleResponse(BaseModel):
-    """Created sale (loan) response with customer and vehicle info."""
+class LeaseResponse(BaseModel):
+    """Created lease (loan) response with customer and vehicle info."""
     loan_id: UUID
     customer_id: UUID
     customer_name: str
     vehicle_id: UUID
-    vehicle_display: str  # e.g. "2020 Honda Civic"
-    sale_amount: float
+    vehicle_display: str
+    lease_amount: float
     down_payment: float
     amount_financed: float
     term_months: int
-    interest_rate: float
+    lease_payment_type: str
     bi_weekly_payment_amount: float
     created_at: datetime
 
@@ -66,14 +69,14 @@ class SaleResponse(BaseModel):
         from_attributes = True
 
 
-class SaleListItem(BaseModel):
-    """Sale (loan) summary for listing."""
+class LeaseListItem(BaseModel):
+    """Lease (loan) summary for listing."""
     loan_id: UUID
     customer_id: UUID
     customer_name: str
     vehicle_id: UUID
     vehicle_display: str
-    sale_amount: float
+    lease_amount: float
     bi_weekly_payment_amount: float
     term_months: float
     created_at: datetime
@@ -82,18 +85,18 @@ class SaleListItem(BaseModel):
         from_attributes = True
 
 
-class SalesSummary(BaseModel):
-    """Dashboard summary for sales list."""
-    total_sales: int = Field(..., description="Total number of sales")
-    total_value: float = Field(..., description="Total value of all sales ($)")
+class LeasesSummary(BaseModel):
+    """Dashboard summary for leases list."""
+    total_leases: int = Field(..., description="Total number of leases")
+    total_value: float = Field(..., description="Total value of all leases ($)")
     active_loans: int = Field(..., description="Number of active loans")
-    this_month: int = Field(..., description="Sales created this month")
+    this_month: int = Field(..., description="Leases created this month")
 
 
-class SalesListResponse(BaseModel):
-    """List sales response with summary stats."""
-    summary: SalesSummary
-    sales: List["SaleListItem"]
+class LeasesListResponse(BaseModel):
+    """List leases response with summary stats."""
+    summary: LeasesSummary
+    leases: List["LeaseListItem"]
 
     class Config:
         from_attributes = True

@@ -193,6 +193,54 @@ AutoLoanPro Team
     )
 
 
+async def send_admin_password_reset_email(
+    admin_email: str,
+    reset_token: str,
+    *,
+    reset_link: str | None = None,
+) -> bool:
+    """
+    Send password reset email to admin.
+    If reset_link is provided (e.g. from settings.ADMIN_PASSWORD_RESET_BASE_URL), use it; otherwise show token.
+    """
+    if reset_link:
+        link_html = f'<p><a href="{reset_link}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a></p>'
+        link_plain = f"Reset your password by visiting: {reset_link}"
+    else:
+        link_html = f'<p>Use the following token to reset your password: <strong>{reset_token}</strong></p>'
+        link_plain = f"Use the following token to reset your password: {reset_token}"
+
+    subject = "AutoLoanPro Admin - Password Reset"
+    html_body = f"""
+<html>
+  <body>
+    <h2>Password Reset Request</h2>
+    <p>You have requested to reset your admin password.</p>
+    {link_html}
+    <p><em>This link/token will expire in 1 hour. If you did not request this, please ignore this email.</em></p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
+    plain_body = f"""Password Reset Request
+
+You have requested to reset your admin password.
+
+{link_plain}
+
+This link/token will expire in 1 hour. If you did not request this, please ignore this email.
+
+Best regards,
+AutoLoanPro Team
+"""
+    return await send_email(
+        to_email=admin_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+    )
+
+
 async def send_overdue_reminder_email(
     customer_email: str,
     customer_name: str,

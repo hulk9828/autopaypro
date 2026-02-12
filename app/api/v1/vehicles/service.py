@@ -40,7 +40,7 @@ class VehicleService:
             color=vehicle_data.color,
             mileage=vehicle_data.mileage,
             purchase_price=vehicle_data.purchase_price,
-            sale_price=vehicle_data.sale_price,
+            lease_price=vehicle_data.lease_price,
             status=vehicle_data.status or VehicleStatus.available.value,
             condition=vehicle_data.condition or VehicleCondition.good.value,
         )

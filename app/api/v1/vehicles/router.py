@@ -45,7 +45,7 @@ async def create_vehicle(
 async def get_all_vehicles(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    status: Optional[str] = Query(None, description="Filter by vehicle status (available/sold)"),
+    status: Optional[str] = Query(None, description="Filter by vehicle status (available/leased)"),
     condition: Optional[str] = Query(None, description="Filter by vehicle condition (bad/good/excellent)"),
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),

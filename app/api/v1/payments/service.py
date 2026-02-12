@@ -25,6 +25,7 @@ from app.models.payment import Payment, PaymentStatus
 from app.models.payment_notification_log import PaymentNotificationLog
 from app.models.vehicle import Vehicle
 from app.core.utils import ensure_non_negative_amount as _ensure_non_negative_amount
+from app.core.loan_schedule import get_due_dates_range as _schedule_due_dates_range
 
 
 def _loan_status_display(loan: Loan | None) -> str:
@@ -34,26 +35,16 @@ def _loan_status_display(loan: Loan | None) -> str:
     return "completed" if getattr(loan, "status", "active") == "closed" else "active"
 
 
-def _get_bi_weekly_due_dates_range(
-    loan_created_at: datetime,
-    term_months: float,
-    from_date: date,
-    to_date: date,
-) -> list[datetime]:
-    """Return bi-weekly due datetimes for a loan between from_date and to_date (inclusive)."""
-    first_due = loan_created_at + timedelta(days=14)
-    if first_due.date() > to_date:
-        return []
-    due_dates: list[datetime] = []
-    d = first_due
-    max_payments = max(1, int(term_months * 2) + 24)
-    for _ in range(max_payments):
-        if d.date() > to_date:
-            break
-        if d.date() >= from_date:
-            due_dates.append(d)
-        d += timedelta(days=14)
-    return due_dates
+def _get_due_dates_range(loan: Loan, from_date: date, to_date: date) -> list[datetime]:
+    """Return due datetimes for a loan between from_date and to_date (uses loan.lease_payment_type)."""
+    payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+    return _schedule_due_dates_range(
+        loan.created_at,
+        loan.loan_term_months,
+        payment_type,
+        from_date,
+        to_date,
+    )
 
 
 def _parse_due_date_iso(due_date_iso: str) -> datetime:
@@ -99,12 +90,7 @@ class PaymentService:
         today = date.today()
         from_date = today
         to_date = today + timedelta(days=365 * 2)
-        due_dates = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
         paid = await self._get_paid_due_dates_for_loan(loan_id)
         for due_dt in due_dates:
             if due_dt.date() not in paid:
@@ -129,15 +115,10 @@ class PaymentService:
         )
         if due_d in paid:
             return None
-        # Check due_d is one of the scheduled due dates
-        from_date = due_d - timedelta(days=14 * 30)
-        to_date = due_d + timedelta(days=14)
-        scheduled = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        # Check due_d is one of the scheduled due dates (window works for bi_weekly, monthly, semi_monthly)
+        from_date = due_d - timedelta(days=60)
+        to_date = due_d + timedelta(days=60)
+        scheduled = _get_due_dates_range(loan, from_date, to_date)
         for s in scheduled:
             if s.date() == due_d:
                 return (s, loan.bi_weekly_payment_amount)
@@ -638,12 +619,7 @@ class PaymentService:
         today = date.today()
         from_date = (loan.created_at + timedelta(days=14)).date()
         to_date = today
-        due_dates = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
         paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
         earliest_overdue_dt = None
         for due_dt in due_dates:
@@ -923,12 +899,7 @@ class PaymentService:
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            all_due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
+            all_due_dates = _get_due_dates_range(loan, loan_start, to_date)
             paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
 
             for due_dt in all_due_dates:
@@ -1036,12 +1007,7 @@ class PaymentService:
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
             paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
             unpaid_dates: list[datetime] = []
             total_unpaid = 0.0
@@ -1117,12 +1083,7 @@ class PaymentService:
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
             paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
             amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
@@ -1175,14 +1136,9 @@ class PaymentService:
         all_items: list[OverdueItem] = []
         for loan, customer, vehicle in loans_result.all():
             # Due dates from loan start up to (and including) yesterday
-            from_date = (loan.created_at + timedelta(days=14)).date()
+            from_date = loan.created_at.date()
             to_date = today
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                from_date,
-                to_date,
-            )
+            due_dates = _get_due_dates_range(loan, from_date, to_date)
             paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
             customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
@@ -1228,14 +1184,9 @@ class PaymentService:
         # Aggregate by customer_id: overdue_count, total_amount
         customer_overdue: dict[UUID, dict] = {}
         for loan, customer, vehicle in loans_result.all():
-            from_date = (loan.created_at + timedelta(days=14)).date()
+            from_date = loan.created_at.date()
             to_date = today
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                from_date,
-                to_date,
-            )
+            due_dates = _get_due_dates_range(loan, from_date, to_date)
             paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
             for due_dt in due_dates:
                 due_d = due_dt.date()

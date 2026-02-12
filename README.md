@@ -2,6 +2,8 @@
 
 This is a FastAPI-based backend for an Auto Loan / Payment Management system.
 
+**→ [Customer vehicle & payment flow](CUSTOMER_PAYMENT_FLOW.md)** – End-to-end flow: how a customer gets a vehicle, login, payment options (logged-in vs payment link), dues, and admin actions.
+
 ## Tech Stack
 
 - Python 3.12

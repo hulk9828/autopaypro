@@ -17,9 +17,10 @@ class Loan(Base):
     total_purchase_price = Column(Float, nullable=False)
     down_payment = Column(Float, nullable=False)
     amount_financed = Column(Float, nullable=False)
-    bi_weekly_payment_amount = Column(Float, nullable=False)
+    bi_weekly_payment_amount = Column(Float, nullable=False)  # amount per payment (any frequency)
     loan_term_months = Column(Float, nullable=False)
-    interest_rate = Column(Float, nullable=False)
+    lease_payment_type = Column(String(20), default="bi_weekly", nullable=False)  # bi_weekly | monthly | semi_monthly
+    interest_rate = Column(Float, nullable=True)  # no longer used; kept for compatibility
     status = Column(String(20), default="active", nullable=False)  # active | closed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

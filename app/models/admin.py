@@ -21,5 +21,7 @@ class Admin(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     profile_pic = Column(String, nullable=True)
     device_token = Column(String, nullable=True)  # For push notifications
+    password_reset_token = Column(String, nullable=True, index=True)
+    password_reset_token_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

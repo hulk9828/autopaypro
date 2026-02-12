@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BasicInfo(BaseModel):
@@ -20,12 +20,22 @@ class AddressDocs(BaseModel):
     employer_name: Optional[str] = None
 
 
-class VehiclePurchase(BaseModel):
+class VehicleLease(BaseModel):
+    """Vehicle to assign to customer on lease (fixed term)."""
     vehicle_id: UUID
-    purchase_price: float
-    down_payment: float
-    interest_rate: float
-    loan_term_months: int
+    lease_amount: float = Field(..., description="Agreed total lease/finance amount")
+    down_payment: float = Field(..., ge=0, description="Down payment / security deposit")
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = Field(
+        default="bi_weekly",
+        description="Payment frequency: bi_weekly, monthly, or semi_monthly",
+    )
+    loan_term_months: int = Field(..., ge=0, description="Lease term in months (0 if full down payment, no schedule)")
+
+    @model_validator(mode="after")
+    def down_payment_less_than_lease_amount(self):
+        if self.down_payment >= self.lease_amount:
+            raise ValueError("Down payment must be less than lease amount")
+        return self
 
 
 class PaymentInfo(BaseModel):
@@ -35,7 +45,7 @@ class PaymentInfo(BaseModel):
 class CreateCustomerRequest(BaseModel):
     basic_info: BasicInfo
     address_docs: AddressDocs
-    vehicles_to_purchase: List[VehiclePurchase]
+    vehicles_to_lease: List[VehicleLease] = Field(..., description="Vehicles to assign to customer on lease")
 
 
 class CustomerResponse(BaseModel):
@@ -128,7 +138,7 @@ class VehicleLoanInfo(BaseModel):
     bi_weekly_payment_amount: float
     remaining_balance: float
     loan_term_months: float
-    interest_rate: float
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     loan_start_date: datetime
     loan_end_date: datetime
     next_payment_due_date: datetime
@@ -166,7 +176,7 @@ class LoanDetail(BaseModel):
     amount_financed: float
     bi_weekly_payment_amount: float
     loan_term_months: float
-    interest_rate: float
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     created_at: datetime
     next_payment_due_date: Optional[datetime] = None
     loan_status: Literal["open", "closed"] = Field(

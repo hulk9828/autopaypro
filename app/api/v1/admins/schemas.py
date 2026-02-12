@@ -75,3 +75,14 @@ class AdminLogin(BaseModel):
     email: EmailStr
     password: str
     device_token: Optional[str] = None
+
+
+class AdminForgotPassword(BaseModel):
+    """Request password reset; sends reset link/OTP to admin email."""
+    email: EmailStr
+
+
+class AdminResetPassword(BaseModel):
+    """Reset password using the token received via email."""
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)

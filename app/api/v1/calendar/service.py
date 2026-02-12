@@ -10,27 +10,11 @@ from app.api.v1.calendar.schemas import (
     PaymentCalendarResponse,
 )
 from app.core.utils import ensure_non_negative_amount
+from app.core.loan_schedule import get_due_dates_range
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment
 from app.models.vehicle import Vehicle
-
-
-def _get_bi_weekly_due_dates(loan_created_at: datetime, term_months: float, up_to_date: date) -> list[datetime]:
-    """Return list of bi-weekly due datetimes for a loan, up to and including up_to_date."""
-    first_due = loan_created_at + timedelta(days=14)
-    if first_due.date() > up_to_date:
-        return []
-    due_dates: list[datetime] = []
-    d = first_due
-    # term_months * 2 ≈ num bi-weekly payments; cap at ~2x for safety
-    max_payments = max(1, int(term_months * 2) + 12)
-    for _ in range(max_payments):
-        if d.date() > up_to_date:
-            break
-        due_dates.append(d)
-        d += timedelta(days=14)
-    return due_dates
 
 
 class CalendarService:
@@ -93,9 +77,12 @@ class CalendarService:
         for loan, customer, vehicle in loans_rows:
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
-            due_dates = _get_bi_weekly_due_dates(
+            payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            due_dates = get_due_dates_range(
                 loan.created_at,
                 loan.loan_term_months,
+                payment_type,
+                loan.created_at.date(),
                 target_date,
             )
             for due_dt in due_dates:

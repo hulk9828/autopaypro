@@ -7,6 +7,8 @@ from app.api.v1.admins.schemas import (
     AdminCreate,
     AdminResponse,
     AdminLogin,
+    AdminForgotPassword,
+    AdminResetPassword,
     AdminProfileResponse,
     AdminProfileUpdate,
     AdminChangePassword,
@@ -61,6 +63,36 @@ async def admin_login(
         expires_delta=access_token_expires,
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post(
+    "/forgot-password",
+    status_code=status.HTTP_200_OK,
+    summary="Admin forgot password",
+    description="Request a password reset email. Always returns success to avoid email enumeration.",
+)
+async def admin_forgot_password(
+    data: AdminForgotPassword,
+    db: AsyncSession = Depends(get_db),
+):
+    admin_service = AdminService(db)
+    await admin_service.request_password_reset(data.email)
+    return {"message": "If an account exists with this email, a password reset link has been sent."}
+
+
+@router.post(
+    "/reset-password",
+    status_code=status.HTTP_200_OK,
+    summary="Admin reset password",
+    description="Reset password using the token received via email.",
+)
+async def admin_reset_password(
+    data: AdminResetPassword,
+    db: AsyncSession = Depends(get_db),
+):
+    admin_service = AdminService(db)
+    await admin_service.reset_password_with_token(data.token, data.new_password)
+    return {"message": "Password has been reset successfully. You can now log in with your new password."}
 
 
 # ============ Admin profile (authenticated admin only) ============

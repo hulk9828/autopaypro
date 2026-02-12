@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -8,8 +9,10 @@ from sqlalchemy import select
 from app.api.v1.admins.schemas import AdminCreate, AdminLogin, AdminProfileUpdate, AdminChangePassword
 from app.core.exceptions import AppException
 from app.core import s3 as s3_module
+from app.core import email as email_module
+from app.core.config import settings
 from app.models.admin import Admin
-from app.core.security import get_password_hash, verify_password
+from app.core.security import get_password_hash, verify_password, create_password_reset_token
 from app.models.enums import Role
 
 
@@ -102,5 +105,48 @@ class AdminService:
         if not verify_password(data.current_password, admin.password_hash):
             AppException().raise_400("Current password is incorrect")
         admin.password_hash = get_password_hash(data.new_password)
+        self.db.add(admin)
+        await self.db.commit()
+
+    async def request_password_reset(self, email: str) -> None:
+        """
+        Generate a reset token for the admin with the given email, store it with expiry, and send reset email.
+        Does not reveal whether the email exists (always return success for security).
+        """
+        admin = await self.get_admin_by_email(email)
+        if not admin:
+            return
+        token = create_password_reset_token()
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        admin.password_reset_token = token
+        admin.password_reset_token_expires_at = expires_at
+        self.db.add(admin)
+        await self.db.commit()
+
+        reset_link = None
+        if settings.ADMIN_PASSWORD_RESET_BASE_URL:
+            base = settings.ADMIN_PASSWORD_RESET_BASE_URL.rstrip("/")
+            reset_link = f"{base}/reset-password?token={token}"
+
+        await email_module.send_admin_password_reset_email(
+            admin_email=admin.email,
+            reset_token=token,
+            reset_link=reset_link,
+        )
+
+    async def reset_password_with_token(self, token: str, new_password: str) -> None:
+        """Find admin by valid reset token and set new password; clear token."""
+        result = await self.db.execute(
+            select(Admin).where(
+                Admin.password_reset_token == token,
+                Admin.password_reset_token_expires_at > datetime.now(timezone.utc),
+            )
+        )
+        admin = result.scalars().first()
+        if not admin:
+            AppException().raise_400("Invalid or expired reset token")
+        admin.password_hash = get_password_hash(new_password)
+        admin.password_reset_token = None
+        admin.password_reset_token_expires_at = None
         self.db.add(admin)
         await self.db.commit()

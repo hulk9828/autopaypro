@@ -8,6 +8,8 @@ class Role(str, Enum):
 
 class VehicleStatus(str, Enum):
     available = "available"
+    leased = "leased"
+    # Legacy: 'sold' may exist in DB; treat as leased. New assignments use leased.
     sold = "sold"
 
 
@@ -20,3 +22,9 @@ class VehicleCondition(str, Enum):
 class AccountStatus(str, Enum):
     active = "active"
     inactive = "inactive"
+
+
+class LeasePaymentType(str, Enum):
+    bi_weekly = "bi_weekly"
+    monthly = "monthly"
+    semi_monthly = "semi_monthly"

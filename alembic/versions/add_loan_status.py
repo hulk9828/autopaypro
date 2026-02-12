@@ -18,11 +18,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "loans",
-        sa.Column("status", sa.String(20), server_default="active", nullable=False),
+    op.execute(
+        "ALTER TABLE loans ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active' NOT NULL"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("loans", "status")
+    op.execute("ALTER TABLE loans DROP COLUMN IF EXISTS status")

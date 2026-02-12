@@ -21,7 +21,7 @@ class Vehicle(Base):
     color = Column(String, nullable=True)
     mileage = Column(Float, nullable=True)
     purchase_price = Column(Float, nullable=False)
-    sale_price = Column(Float, nullable=True)
+    lease_price = Column(Float, nullable=True)
     status = Column(String, default=VehicleStatus.available.value, nullable=False)
     condition = Column(String, default=VehicleCondition.good.value, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

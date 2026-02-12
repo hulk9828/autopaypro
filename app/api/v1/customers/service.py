@@ -4,14 +4,14 @@ import uuid
 import secrets
 import string
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
 
 from app.api.v1.customers.schemas import (
     CreateCustomerRequest, 
-    VehiclePurchase, 
+    VehicleLease, 
     CustomerLogin,
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -29,6 +29,7 @@ from app.models.vehicle import Vehicle
 from app.models.customer_vehicle import CustomerVehicle
 from app.models.loan import Loan
 from app.models.payment import Payment
+from app.core.loan_schedule import get_due_dates_range
 from app.models.enums import VehicleStatus, AccountStatus
 from app.core.security import get_password_hash, verify_password
 from app.core.email import send_customer_password_email, send_otp_email
@@ -86,98 +87,85 @@ class CustomerService:
         self.db.add(new_customer)
         await self.db.flush()
 
-        # Assign vehicles and create loans
-        # Track vehicle IDs to prevent duplicate assignments in the same request
+        # Assign vehicles on lease and create loans
         assigned_vehicle_ids = set()
-        
-        for vehicle_purchase in customer_data.vehicles_to_purchase:
-            # Check for duplicate vehicles in the same request
-            if vehicle_purchase.vehicle_id in assigned_vehicle_ids:
-                AppException().raise_400(f"Vehicle with id {vehicle_purchase.vehicle_id} is already included in this purchase request")
-            
-            # Fetch vehicle
-            vehicle = await self.db.get(Vehicle, vehicle_purchase.vehicle_id)
+        lease_start = datetime.utcnow()
+
+        for vehicle_lease in customer_data.vehicles_to_lease:
+            if vehicle_lease.vehicle_id in assigned_vehicle_ids:
+                AppException().raise_400(f"Vehicle with id {vehicle_lease.vehicle_id} is already included in this lease request")
+
+            vehicle = await self.db.get(Vehicle, vehicle_lease.vehicle_id)
             if not vehicle:
-                AppException().raise_400(f"Vehicle with id {vehicle_purchase.vehicle_id} does not exist")
-            
-            # Check if vehicle is already assigned to another customer
+                AppException().raise_400(f"Vehicle with id {vehicle_lease.vehicle_id} does not exist")
+
             existing_assignment = await self.db.execute(
-                select(CustomerVehicle).where(CustomerVehicle.vehicle_id == vehicle_purchase.vehicle_id)
+                select(CustomerVehicle).where(CustomerVehicle.vehicle_id == vehicle_lease.vehicle_id)
             )
             assigned_customer_vehicle = existing_assignment.scalar_one_or_none()
-            
             if assigned_customer_vehicle:
-                # Vehicle is already assigned to another customer
-                AppException().raise_400(f"Vehicle with id {vehicle_purchase.vehicle_id} is already assigned to another customer")
-            
-            # Check if vehicle is already sold
-            if vehicle.status == VehicleStatus.sold.value:
-                AppException().raise_400(f"Vehicle with id {vehicle_purchase.vehicle_id} is already sold and not available") 
-            
-            # Add to tracking set
-            assigned_vehicle_ids.add(vehicle_purchase.vehicle_id)
+                AppException().raise_400(f"Vehicle with id {vehicle_lease.vehicle_id} is already leased to another customer")
 
-            # Mark vehicle as sold
-            vehicle.status = VehicleStatus.sold.value
+            if vehicle.status in (VehicleStatus.sold.value, VehicleStatus.leased.value):
+                AppException().raise_400(f"Vehicle with id {vehicle_lease.vehicle_id} is already leased and not available")
+
+            assigned_vehicle_ids.add(vehicle_lease.vehicle_id)
+
+            vehicle.status = VehicleStatus.leased.value
             self.db.add(vehicle)
             await self.db.flush()
 
-            # Create CustomerVehicle entry
+            # Lease duration for reassignment: end = start + term (approx 30.44 days/month)
+            lease_end = None
+            if vehicle_lease.loan_term_months > 0:
+                lease_end = lease_start + timedelta(days=round(vehicle_lease.loan_term_months * 30.44))
+
             customer_vehicle = CustomerVehicle(
                 customer_id=new_customer.id,
-                vehicle_id=vehicle.id
+                vehicle_id=vehicle.id,
+                lease_start_date=lease_start,
+                lease_end_date=lease_end,
             )
             self.db.add(customer_vehicle)
             await self.db.flush()
 
-            # Calculate amount financed (purchase price - down payment)
-            amount_financed = vehicle_purchase.purchase_price - vehicle_purchase.down_payment
+            amount_financed = vehicle_lease.lease_amount - vehicle_lease.down_payment
             if amount_financed < 0:
-                AppException().raise_400(
-                    "Down payment must be less than purchase price"
-                )
+                AppException().raise_400("Down payment must be less than lease amount")
             amount_financed = ensure_non_negative_amount(amount_financed)
 
-            # When purchase_price == down_payment: no timeline needed, loan is closed with zero payment
+            payment_type = getattr(vehicle_lease, "lease_payment_type", "bi_weekly") or "bi_weekly"
             if amount_financed == 0:
                 bi_weekly_payment_amount = 0.0
                 loan_term_months = 0.0
             else:
-                # Validate loan term when there is an amount to finance
-                if vehicle_purchase.loan_term_months <= 0:
+                if vehicle_lease.loan_term_months <= 0:
                     AppException().raise_400(
-                        f"Loan term must be greater than 0 months for vehicle {vehicle_purchase.vehicle_id}"
+                        f"Loan term must be greater than 0 months for vehicle {vehicle_lease.vehicle_id}"
                     )
-                # Calculate bi-weekly payment
-                # P = L [i(1 + i)^n] / [(1 + i)^n – 1]
-                bi_weekly_interest_rate = (vehicle_purchase.interest_rate / 100) / 26
-                num_payments = vehicle_purchase.loan_term_months * 2
+                if payment_type == "monthly":
+                    num_payments = vehicle_lease.loan_term_months
+                else:
+                    num_payments = vehicle_lease.loan_term_months * 2  # bi_weekly or semi_monthly
                 if num_payments <= 0:
                     AppException().raise_400(
-                        f"Number of payments must be greater than 0 for vehicle {vehicle_purchase.vehicle_id}"
+                        f"Number of payments must be greater than 0 for vehicle {vehicle_lease.vehicle_id}"
                     )
-                if bi_weekly_interest_rate > 0:
-                    bi_weekly_payment_amount = (
-                        amount_financed
-                        * bi_weekly_interest_rate
-                        * (1 + bi_weekly_interest_rate) ** num_payments
-                    ) / (((1 + bi_weekly_interest_rate) ** num_payments) - 1)
-                else:
-                    bi_weekly_payment_amount = amount_financed / num_payments
+                bi_weekly_payment_amount = amount_financed / num_payments
                 bi_weekly_payment_amount = ensure_non_negative_amount(bi_weekly_payment_amount)
-                loan_term_months = float(vehicle_purchase.loan_term_months)
+                loan_term_months = float(vehicle_lease.loan_term_months)
 
-            # Create loan (closed when amount_financed is zero)
             loan = Loan(
                 id=uuid.uuid4(),
                 customer_id=new_customer.id,
                 vehicle_id=vehicle.id,
-                total_purchase_price=vehicle_purchase.purchase_price,
-                down_payment=vehicle_purchase.down_payment,
+                total_purchase_price=vehicle_lease.lease_amount,
+                down_payment=vehicle_lease.down_payment,
                 amount_financed=amount_financed,
                 bi_weekly_payment_amount=bi_weekly_payment_amount,
                 loan_term_months=loan_term_months,
-                interest_rate=vehicle_purchase.interest_rate,
+                lease_payment_type=payment_type,
+                interest_rate=None,
                 status="closed" if amount_financed == 0 else "active",
             )
             self.db.add(loan)
@@ -463,7 +451,8 @@ class CustomerService:
         for loan, vehicle in loans_with_vehicles:
             loan_start_date = loan.created_at
             loan_end_date = loan_start_date + timedelta(days=int(loan.loan_term_months * 30.44))
-            total_payments = int(loan.loan_term_months * 2)
+            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            total_payments = int(loan.loan_term_months) if pt == "monthly" else int(loan.loan_term_months * 2)
             next_payment_due_date = await self._get_next_payment_due_date(loan)
             if next_payment_due_date is None:
                 next_payment_due_date = loan_end_date
@@ -493,7 +482,7 @@ class CustomerService:
                 bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                 remaining_balance=remaining_balance,
                 loan_term_months=loan.loan_term_months,
-                interest_rate=loan.interest_rate,
+                lease_payment_type=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly",
                 loan_start_date=loan_start_date,
                 loan_end_date=loan_end_date,
                 next_payment_due_date=next_payment_due_date,
@@ -526,23 +515,27 @@ class CustomerService:
         )
 
     async def _get_next_payment_due_date(self, loan: Loan) -> Optional[datetime]:
-        """Calculate the next payment due date for a loan."""
-        loan_start = loan.created_at
-        first_payment_due = loan_start + timedelta(days=14)
-        payments_result = await self.db.execute(
-            select(Payment)
-            .where(Payment.loan_id == loan.id)
-            .order_by(Payment.due_date.desc())
-        )
-        payments = payments_result.scalars().all()
-        if not payments:
-            return first_payment_due
-        latest_payment_due = payments[0].due_date
-        next_due = latest_payment_due + timedelta(days=14)
-        loan_end_date = loan_start + timedelta(days=int(loan.loan_term_months * 30.44))
-        if next_due > loan_end_date:
+        """Calculate the next payment due date for a loan (uses lease_payment_type)."""
+        if getattr(loan, "status", "active") == "closed":
             return None
-        return next_due
+        payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+        today = date.today()
+        to_date = today + timedelta(days=365 * 2)
+        due_dates = get_due_dates_range(
+            loan.created_at,
+            loan.loan_term_months,
+            payment_type,
+            today,
+            to_date,
+        )
+        payments_result = await self.db.execute(
+            select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan.id)
+        )
+        paid = {r.d for r in payments_result.all()}
+        for due_dt in due_dates:
+            if due_dt.date() not in paid:
+                return due_dt
+        return None
 
     async def _count_overdue_accounts(self) -> int:
         """Count customers with at least one overdue payment."""
@@ -750,7 +743,7 @@ class CustomerService:
                 amount_financed=ensure_non_negative_amount(loan.amount_financed),
                 bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                 loan_term_months=loan.loan_term_months,
-                interest_rate=loan.interest_rate,
+                lease_payment_type=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly",
                 created_at=loan.created_at,
                 next_payment_due_date=next_due,
                 loan_status=loan_status,

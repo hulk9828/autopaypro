@@ -252,8 +252,8 @@ async def admin_update_customer_profile(
     "/",
     response_model=CustomerResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new customer and associated loans/vehicles",
-    description="Admin-only endpoint to create a new customer. Requires admin authentication.",
+    summary="Create a new customer and assign vehicles on lease",
+    description="Admin-only. Create a customer and assign vehicles on lease (fixed term). Each vehicle gets a loan; credentials are emailed.",
     tags=["admin-customers"],
     dependencies=[Depends(get_current_active_admin_user)]
 )
@@ -262,7 +262,7 @@ async def create_customer(
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new customer. Only admins can create customers."""
+    """Create a new customer and assign vehicles on lease. Only admins."""
     customer_service = CustomerService(db)
     new_customer = await customer_service.create_customer_and_loan(customer_data)
     return CustomerResponse.model_validate(new_customer)
