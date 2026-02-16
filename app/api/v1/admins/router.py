@@ -8,6 +8,7 @@ from app.api.v1.admins.schemas import (
     AdminResponse,
     AdminLogin,
     AdminForgotPassword,
+    AdminVerifyOtp,
     AdminResetPassword,
     AdminProfileResponse,
     AdminProfileUpdate,
@@ -69,7 +70,7 @@ async def admin_login(
     "/forgot-password",
     status_code=status.HTTP_200_OK,
     summary="Admin forgot password",
-    description="Request a password reset email. Always returns success to avoid email enumeration.",
+    description="Send a 6-digit OTP to admin email. Always returns success to avoid email enumeration.",
 )
 async def admin_forgot_password(
     data: AdminForgotPassword,
@@ -77,21 +78,36 @@ async def admin_forgot_password(
 ):
     admin_service = AdminService(db)
     await admin_service.request_password_reset(data.email)
-    return {"message": "If an account exists with this email, a password reset link has been sent."}
+    return {"message": "If an account exists with this email, an OTP has been sent."}
+
+
+@router.post(
+    "/verify-otp",
+    status_code=status.HTTP_200_OK,
+    summary="Verify OTP",
+    description="Verify the 6-digit OTP sent to admin email. Call before reset-password.",
+)
+async def admin_verify_otp(
+    data: AdminVerifyOtp,
+    db: AsyncSession = Depends(get_db),
+):
+    admin_service = AdminService(db)
+    await admin_service.verify_otp(data.email, data.otp)
+    return {"message": "OTP verified successfully."}
 
 
 @router.post(
     "/reset-password",
     status_code=status.HTTP_200_OK,
     summary="Admin reset password",
-    description="Reset password using the token received via email.",
+    description="Reset password using email, OTP (from email), and new password.",
 )
 async def admin_reset_password(
     data: AdminResetPassword,
     db: AsyncSession = Depends(get_db),
 ):
     admin_service = AdminService(db)
-    await admin_service.reset_password_with_token(data.token, data.new_password)
+    await admin_service.reset_password_with_otp(data.email, data.otp, data.new_password)
     return {"message": "Password has been reset successfully. You can now log in with your new password."}
 
 
