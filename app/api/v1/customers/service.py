@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
 
 from app.api.v1.customers.schemas import (
-    CreateCustomerRequest, 
-    VehicleLease, 
+    CreateCustomerRequest,
+    VehicleLease,
     CustomerLogin,
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -21,6 +21,10 @@ from app.api.v1.customers.schemas import (
     CustomerDetailResponse,
     LoanDetail,
     CustomerProfileUpdate,
+    CustomerPaymentScheduleResponse,
+    LoanPaymentSchedule,
+    PaymentScheduleEntry,
+    _payment_schedule_description,
 )
 from app.core.exceptions import AppException
 from app.core.utils import ensure_non_negative_amount
@@ -111,14 +115,25 @@ class CustomerService:
 
             assigned_vehicle_ids.add(vehicle_lease.vehicle_id)
 
+            # Set lease price on vehicle (entered at customer/lease assignment time)
+            vehicle.lease_price = vehicle_lease.lease_price
+
+            # Lease period for this vehicle (explicit lease_period_months or loan_term_months)
+            term_months = (
+                vehicle_lease.lease_period_months
+                if vehicle_lease.lease_period_months is not None
+                else vehicle_lease.loan_term_months
+            )
+
+            # Lease duration: when the lease ends (for reassignment)
+            lease_end = None
+            if term_months > 0:
+                lease_end = lease_start + timedelta(days=round(term_months * 30.44))
+
+            vehicle.lease_end_date = lease_end
             vehicle.status = VehicleStatus.leased.value
             self.db.add(vehicle)
             await self.db.flush()
-
-            # Lease duration for reassignment: end = start + term (approx 30.44 days/month)
-            lease_end = None
-            if vehicle_lease.loan_term_months > 0:
-                lease_end = lease_start + timedelta(days=round(vehicle_lease.loan_term_months * 30.44))
 
             customer_vehicle = CustomerVehicle(
                 customer_id=new_customer.id,
@@ -129,37 +144,35 @@ class CustomerService:
             self.db.add(customer_vehicle)
             await self.db.flush()
 
-            amount_financed = vehicle_lease.lease_amount - vehicle_lease.down_payment
-            if amount_financed < 0:
-                AppException().raise_400("Down payment must be less than lease amount")
-            amount_financed = ensure_non_negative_amount(amount_financed)
+            # lease_amount = total to be paid over the loan term (installments); down_payment = lease_price - lease_amount
+            amount_financed = ensure_non_negative_amount(vehicle_lease.lease_amount)
 
             payment_type = getattr(vehicle_lease, "lease_payment_type", "bi_weekly") or "bi_weekly"
             if amount_financed == 0:
                 bi_weekly_payment_amount = 0.0
                 loan_term_months = 0.0
             else:
-                if vehicle_lease.loan_term_months <= 0:
+                if term_months <= 0:
                     AppException().raise_400(
-                        f"Loan term must be greater than 0 months for vehicle {vehicle_lease.vehicle_id}"
+                        f"Loan/lease term must be greater than 0 months for vehicle {vehicle_lease.vehicle_id}"
                     )
                 if payment_type == "monthly":
-                    num_payments = vehicle_lease.loan_term_months
+                    num_payments = term_months
                 else:
-                    num_payments = vehicle_lease.loan_term_months * 2  # bi_weekly or semi_monthly
+                    num_payments = term_months * 2  # bi_weekly or semi_monthly
                 if num_payments <= 0:
                     AppException().raise_400(
                         f"Number of payments must be greater than 0 for vehicle {vehicle_lease.vehicle_id}"
                     )
                 bi_weekly_payment_amount = amount_financed / num_payments
                 bi_weekly_payment_amount = ensure_non_negative_amount(bi_weekly_payment_amount)
-                loan_term_months = float(vehicle_lease.loan_term_months)
+                loan_term_months = float(term_months)
 
             loan = Loan(
                 id=uuid.uuid4(),
                 customer_id=new_customer.id,
                 vehicle_id=vehicle.id,
-                total_purchase_price=vehicle_lease.lease_amount,
+                total_purchase_price=vehicle_lease.lease_price,
                 down_payment=vehicle_lease.down_payment,
                 amount_financed=amount_financed,
                 bi_weekly_payment_amount=bi_weekly_payment_amount,
@@ -467,6 +480,8 @@ class CustomerService:
                 earliest_next_due = next_payment_due_date
                 next_payment_amount = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
+            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             vehicle_info = VehicleLoanInfo(
                 vehicle_id=vehicle.id,
                 loan_id=loan.id,
@@ -479,10 +494,12 @@ class CustomerService:
                 total_purchase_price=ensure_non_negative_amount(loan.total_purchase_price),
                 down_payment=ensure_non_negative_amount(loan.down_payment),
                 amount_financed=ensure_non_negative_amount(loan.amount_financed),
-                bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                bi_weekly_payment_amount=payment_amt,
+                payment_amount=payment_amt,
+                payment_schedule_description=_payment_schedule_description(pt),
                 remaining_balance=remaining_balance,
                 loan_term_months=loan.loan_term_months,
-                lease_payment_type=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly",
+                lease_payment_type=pt,
                 loan_start_date=loan_start_date,
                 loan_end_date=loan_end_date,
                 next_payment_due_date=next_payment_due_date,
@@ -536,6 +553,85 @@ class CustomerService:
             if due_dt.date() not in paid:
                 return due_dt
         return None
+
+    async def _get_paid_due_dates_for_loan(self, loan_id: uuid.UUID) -> set[date]:
+        """Set of (due_date as date) that have been paid for this loan."""
+        result = await self.db.execute(
+            select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan_id)
+        )
+        return {r.d for r in result.all()}
+
+    async def get_customer_payment_schedule(
+        self,
+        customer: Customer,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+    ) -> CustomerPaymentScheduleResponse:
+        """
+        Get full payment schedule for the customer: for each loan, list of due dates with amount and status (paid/upcoming/overdue).
+        If from_date/to_date not provided, uses loan start to loan end for each loan.
+        """
+        result = await self.db.execute(
+            select(Loan, Vehicle)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .where(Loan.customer_id == customer.id)
+        )
+        loans_with_vehicles = result.all()
+        today = date.today()
+        loan_schedules: List[LoanPaymentSchedule] = []
+
+        for loan, vehicle in loans_with_vehicles:
+            payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            loan_start = loan.created_at.date()
+            loan_end = loan_start + timedelta(days=int(loan.loan_term_months * 30.44))
+            start = from_date if from_date is not None else loan_start
+            end = to_date if to_date is not None else loan_end
+            # Clamp to loan period
+            start = max(start, loan_start)
+            end = min(end, loan_end) if loan.loan_term_months > 0 else end
+
+            due_dates = get_due_dates_range(
+                loan.created_at,
+                loan.loan_term_months,
+                payment_type,
+                start,
+                end,
+            )
+            paid_dates = await self._get_paid_due_dates_for_loan(loan.id)
+            now = datetime.utcnow()
+
+            entries: List[PaymentScheduleEntry] = []
+            for due_dt in due_dates:
+                d = due_dt.date()
+                if d in paid_dates:
+                    status = "paid"
+                elif due_dt < now:
+                    status = "overdue"
+                else:
+                    status = "upcoming"
+                entries.append(
+                    PaymentScheduleEntry(due_date=due_dt, amount=payment_amt, status=status)
+                )
+
+            vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
+            loan_schedules.append(
+                LoanPaymentSchedule(
+                    loan_id=loan.id,
+                    vehicle_display=vehicle_display,
+                    lease_payment_type=payment_type,
+                    payment_schedule_description=_payment_schedule_description(payment_type),
+                    payment_amount=payment_amt,
+                    entries=entries,
+                )
+            )
+
+        customer_name = f"{customer.first_name} {customer.last_name}"
+        return CustomerPaymentScheduleResponse(
+            customer_id=customer.id,
+            customer_name=customer_name,
+            loans=loan_schedules,
+        )
 
     async def _count_overdue_accounts(self) -> int:
         """Count customers with at least one overdue payment."""
@@ -731,6 +827,8 @@ class CustomerService:
                 earliest_next_due = next_due
                 next_payment_amount_val = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
+            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_detail = LoanDetail(
                 loan_id=loan.id,
                 vehicle_id=vehicle.id,
@@ -741,9 +839,11 @@ class CustomerService:
                 total_purchase_price=ensure_non_negative_amount(loan.total_purchase_price),
                 down_payment=ensure_non_negative_amount(loan.down_payment),
                 amount_financed=ensure_non_negative_amount(loan.amount_financed),
-                bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                bi_weekly_payment_amount=payment_amt,
+                payment_amount=payment_amt,
+                payment_schedule_description=_payment_schedule_description(pt),
                 loan_term_months=loan.loan_term_months,
-                lease_payment_type=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly",
+                lease_payment_type=pt,
                 created_at=loan.created_at,
                 next_payment_due_date=next_due,
                 loan_status=loan_status,

@@ -1,13 +1,12 @@
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
-
 from sqlalchemy import Column, DateTime, String, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-
 from app.core.database import Base
 from app.models.enums import VehicleStatus, VehicleCondition
+
 
 
 class Vehicle(Base):
@@ -22,6 +21,7 @@ class Vehicle(Base):
     mileage = Column(Float, nullable=True)
     purchase_price = Column(Float, nullable=False)
     lease_price = Column(Float, nullable=True)
+    lease_end_date = Column(DateTime, nullable=True)
     status = Column(String, default=VehicleStatus.available.value, nullable=False)
     condition = Column(String, default=VehicleCondition.good.value, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -9,6 +9,7 @@ from openpyxl.styles import Font, Alignment
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 
+from app.api.v1.customers.schemas import _payment_schedule_description
 from app.api.v1.sales.schemas import (
     CreateLeaseRequest,
     LeaseResponse,
@@ -126,6 +127,8 @@ class SaleService:
         self.db.add(cv)
         await self.db.flush()
 
+        vehicle.lease_price = data.lease_price
+        vehicle.lease_end_date = lease_end
         vehicle.status = VehicleStatus.leased.value
         self.db.add(vehicle)
         await self.db.flush()
@@ -151,6 +154,8 @@ class SaleService:
 
         customer_name = f"{customer.first_name} {customer.last_name}"
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
+        pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+        payment_amt = round(ensure_non_negative_amount(loan.bi_weekly_payment_amount), 2)
 
         return LeaseResponse(
             loan_id=loan.id,
@@ -162,8 +167,10 @@ class SaleService:
             down_payment=ensure_non_negative_amount(loan.down_payment),
             amount_financed=ensure_non_negative_amount(loan.amount_financed),
             term_months=data.term_months,
-            lease_payment_type=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly",
-            bi_weekly_payment_amount=round(ensure_non_negative_amount(loan.bi_weekly_payment_amount), 2),
+            lease_payment_type=pt,
+            bi_weekly_payment_amount=payment_amt,
+            payment_amount=payment_amt,
+            payment_schedule_description=_payment_schedule_description(pt),
             created_at=loan.created_at,
         )
 
@@ -223,6 +230,8 @@ class SaleService:
         for loan, customer, vehicle in rows:
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
+            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             out.append(
                 LeaseListItem(
                     loan_id=loan.id,
@@ -231,7 +240,10 @@ class SaleService:
                     vehicle_id=loan.vehicle_id,
                     vehicle_display=vehicle_display,
                     lease_amount=ensure_non_negative_amount(loan.total_purchase_price),
-                    bi_weekly_payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                    bi_weekly_payment_amount=payment_amt,
+                    payment_amount=payment_amt,
+                    payment_schedule_description=_payment_schedule_description(pt),
+                    lease_payment_type=pt,
                     term_months=loan.loan_term_months,
                     created_at=loan.created_at,
                 )
@@ -278,9 +290,10 @@ class SaleService:
             "Lease Amount",
             "Down Payment",
             "Amount Financed",
-            "Bi-Weekly Payment",
+            "Payment Amount",
             "Term (Months)",
             "Lease Payment Type",
+            "Payment Schedule",
             "Loan Status",
             "Created At",
         ]
@@ -306,11 +319,13 @@ class SaleService:
             ws.cell(row=row_idx, column=6, value=ensure_non_negative_amount(loan.total_purchase_price))
             ws.cell(row=row_idx, column=7, value=ensure_non_negative_amount(loan.down_payment))
             ws.cell(row=row_idx, column=8, value=ensure_non_negative_amount(loan.amount_financed))
+            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
             ws.cell(row=row_idx, column=9, value=ensure_non_negative_amount(loan.bi_weekly_payment_amount))
             ws.cell(row=row_idx, column=10, value=loan.loan_term_months)
-            ws.cell(row=row_idx, column=11, value=getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly")
-            ws.cell(row=row_idx, column=12, value=loan_status)
-            ws.cell(row=row_idx, column=13, value=created_at_str)
+            ws.cell(row=row_idx, column=11, value=pt)
+            ws.cell(row=row_idx, column=12, value=_payment_schedule_description(pt))
+            ws.cell(row=row_idx, column=13, value=loan_status)
+            ws.cell(row=row_idx, column=14, value=created_at_str)
 
         buffer = io.BytesIO()
         wb.save(buffer)

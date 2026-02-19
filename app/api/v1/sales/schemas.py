@@ -11,6 +11,7 @@ class CreateLeaseRequest(BaseModel):
     """Request to create a new vehicle lease with loan terms."""
     customer_id: UUID = Field(..., description="Existing customer ID")
     vehicle_id: UUID = Field(..., description="Available vehicle ID")
+    lease_price: float = Field(..., gt=0, description="Lease price for this vehicle (entered when assigning to customer)")
     lease_amount: float = Field(..., gt=0, description="Total lease/finance amount")
     down_payment: float = Field(..., ge=0, description="Down payment / security deposit")
     term_months: int = Field(..., gt=0, le=360, description="Lease term in months")
@@ -63,6 +64,8 @@ class LeaseResponse(BaseModel):
     term_months: int
     lease_payment_type: str
     bi_weekly_payment_amount: float
+    payment_amount: float = Field(..., description="Amount due per payment (per lease_payment_type frequency)")
+    payment_schedule_description: str = Field(..., description="Human-readable payment frequency")
     created_at: datetime
 
     class Config:
@@ -78,6 +81,9 @@ class LeaseListItem(BaseModel):
     vehicle_display: str
     lease_amount: float
     bi_weekly_payment_amount: float
+    payment_amount: float = Field(..., description="Amount due per payment")
+    payment_schedule_description: str = Field(..., description="Human-readable payment frequency")
+    lease_payment_type: str = Field(default="bi_weekly", description="bi_weekly, monthly, or semi_monthly")
     term_months: float
     created_at: datetime
 

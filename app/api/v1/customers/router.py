@@ -1,13 +1,14 @@
 from typing import List, Optional
 from uuid import UUID
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
 
 from app.api.v1.customers.schemas import (
-    CreateCustomerRequest, 
-    CustomerResponse, 
+    CreateCustomerRequest,
+    CustomerResponse,
     CustomerLogin,
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -17,7 +18,8 @@ from app.api.v1.customers.schemas import (
     CustomerListResponse,
     CustomerProfileResponse,
     CustomerProfileUpdate,
-    VerifyOtpRequest
+    VerifyOtpRequest,
+    CustomerPaymentScheduleResponse,
 )
 from app.api.v1.customers.service import CustomerService
 from app.core.deps import get_db, get_current_customer, get_current_active_admin_user
@@ -81,6 +83,27 @@ async def get_customer_home_page(
     customer_service = CustomerService(db)
     home_page_data = await customer_service.get_customer_home_page_data(current_customer)
     return home_page_data
+
+
+@router.get(
+    "/payment-schedule",
+    response_model=CustomerPaymentScheduleResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Customer payment schedule",
+    description="Get when to pay and how much: for each loan, list of due dates with amount and status (paid/upcoming/overdue). Optional from_date and to_date to filter the date range.",
+    tags=["customer"]
+)
+async def get_customer_payment_schedule(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+    from_date: Optional[date] = Query(None, description="Start date for schedule (default: loan start)"),
+    to_date: Optional[date] = Query(None, description="End date for schedule (default: loan end)"),
+):
+    """Customer sees all due dates and amounts for their loans. Each entry has due_date, amount, and status (paid/upcoming/overdue)."""
+    customer_service = CustomerService(db)
+    return await customer_service.get_customer_payment_schedule(
+        current_customer, from_date=from_date, to_date=to_date
+    )
 
 
 @router.get(
