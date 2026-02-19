@@ -40,20 +40,23 @@ class CalendarService:
         )
         paid_result = await self.db.execute(paid_stmt)
         paid_rows = paid_result.all()
-        paid_items = [
-            PaidCalendarItem(
-                loan_id=p.loan_id,
-                customer_id=p.customer_id,
-                customer_name=f"{c.first_name} {c.last_name}",
-                due_date=p.due_date,
-                amount=ensure_non_negative_amount(p.amount),
-                vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
-                payment_id=p.id,
-                payment_date=p.payment_date,
-                payment_method=p.payment_method,
+        paid_items = []
+        for p, loan, c, v in paid_rows:
+            emi_val = getattr(p, "emi_amount", None) or ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            paid_items.append(
+                PaidCalendarItem(
+                    loan_id=p.loan_id,
+                    customer_id=p.customer_id,
+                    customer_name=f"{c.first_name} {c.last_name}",
+                    due_date=p.due_date,
+                    amount=ensure_non_negative_amount(p.amount),
+                    emi_amount=ensure_non_negative_amount(emi_val),
+                    vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
+                    payment_id=p.id,
+                    payment_date=p.payment_date,
+                    payment_method=p.payment_method,
+                )
             )
-            for p, loan, c, v in paid_rows
-        ]
 
         # --- Set of (loan_id, due_date as date) that have a payment ---
         all_paid_stmt = select(Payment.loan_id, func.date(Payment.due_date).label("d")).where(
@@ -90,12 +93,14 @@ class CalendarService:
                 key = (loan.id, due_d)
                 if key in paid_pairs:
                     continue
+                amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                 item = CalendarPaymentItem(
                     loan_id=loan.id,
                     customer_id=loan.customer_id,
                     customer_name=customer_name,
                     due_date=due_dt,
-                    amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                    amount=amt,
+                    emi_amount=amt,
                     vehicle_display=vehicle_display,
                 )
                 if due_d == target_date:

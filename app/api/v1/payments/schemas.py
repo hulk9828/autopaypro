@@ -17,6 +17,7 @@ class PaymentReceiptResponse(BaseModel):
     customer_email: str | None = Field(None, description="Customer email")
     customer_phone: str | None = Field(None, description="Customer phone")
     amount: float = Field(..., description="Amount paid")
+    emi_amount: float = Field(..., description="EMI amount due for this due date (amount customer had to pay)")
     currency: str = Field(default="usd", description="Currency code")
     payment_method: str = Field(..., description="Payment method (card, cash, etc.)")
     payment_date: datetime = Field(..., description="Date and time of payment")
@@ -41,6 +42,7 @@ class TransactionItem(BaseModel):
     customer_name: str | None = None
     vehicle_display: str | None = None
     amount: float
+    emi_amount: float = Field(..., description="EMI amount due for this due date (amount customer had to pay)")
     payment_method: str
     status: str = Field(..., description="completed | failed")
     payment_date: datetime
@@ -122,6 +124,7 @@ class CheckoutRequest(BaseModel):
 class CheckoutResponse(BaseModel):
     """Payment details for checkout: amount, Stripe client_secret, and display info. No auth required."""
     amount: float = Field(..., description="Amount due in currency units")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     amount_cents: int = Field(..., description="Amount in cents for Stripe")
     currency: str = Field(..., description="Currency code (e.g. usd)")
     client_secret: str = Field(..., description="Stripe PaymentIntent client_secret for client-side confirm")
@@ -140,6 +143,7 @@ class CheckoutResponse(BaseModel):
 class GetCheckoutResponse(BaseModel):
     """Checkout details retrieved by payment_intent_id (e.g. for polling or status). Includes Stripe status."""
     amount: float = Field(..., description="Amount in currency units")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     amount_cents: int = Field(..., description="Amount in cents")
     currency: str = Field(..., description="Currency code (e.g. usd)")
     status: str = Field(..., description="Stripe PaymentIntent status: requires_payment_method, requires_confirmation, requires_action, processing, succeeded, canceled")
@@ -261,7 +265,8 @@ class OverdueItem(BaseModel):
     customer_name: str | None = None
     vehicle_display: str | None = None
     due_date: datetime = Field(..., description="Scheduled due date that was missed")
-    amount: float = Field(..., description="Bi-weekly payment amount due")
+    amount: float = Field(..., description="Payment amount due")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     days_overdue: int = Field(..., description="Days past due date")
     loan_status: Literal["active", "completed"] = Field(
         default="active",
@@ -288,6 +293,7 @@ class DueCustomerItem(BaseModel):
     vehicle_display: str | None = Field(None, description="Vehicle (year make model)")
     unpaid_count: int = Field(..., description="Number of unpaid installments")
     total_unpaid_amount: float = Field(..., description="Total amount due for this loan")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay per due date")
     next_due_date: datetime | None = Field(None, description="First unpaid due date")
     next_due_date_iso: str | None = Field(None, description="First unpaid due date ISO (for create checkout with payment_type=due)")
     loan_status: Literal["active", "completed"] = Field(
@@ -314,6 +320,7 @@ class DueInstallmentItem(BaseModel):
     due_date: datetime = Field(..., description="Due date for this installment")
     due_date_iso: str = Field(..., description="Due date ISO (for create checkout payment_type=due, due_date_iso)")
     amount: float = Field(..., description="Amount due")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     days_overdue: int | None = Field(None, description="Days past due (if overdue)")
     days_until_due: int | None = Field(None, description="Days until due (if future)")
     loan_status: Literal["active", "completed"] = Field(
@@ -338,6 +345,7 @@ class DueEntryItem(BaseModel):
     vehicle_display: str | None = None
     due_date: datetime = Field(..., description="Scheduled due date")
     amount: float = Field(..., description="Installment amount")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     payment_date: datetime | None = Field(None, description="When paid (for paid dues)")
     payment_id: UUID | None = Field(None, description="Payment id if paid")
     days_overdue: int | None = Field(None, description="Days past due (for overdue)")
@@ -360,6 +368,7 @@ class PaymentSummaryItem(BaseModel):
     vehicle_display: str | None = None
     due_date: datetime = Field(..., description="Scheduled due date")
     amount: float = Field(..., description="Installment amount")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     payment_date: datetime | None = Field(None, description="When paid (for paid_dues)")
     payment_id: UUID | None = Field(None, description="Payment id if paid")
     days_overdue: int | None = Field(None, description="Days past due (for overdue_payments)")

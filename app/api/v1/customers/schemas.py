@@ -233,6 +233,7 @@ class PaymentScheduleEntry(BaseModel):
     """Single due date entry: when to pay and how much."""
     due_date: datetime = Field(..., description="Date and time when this payment is due")
     amount: float = Field(..., description="Amount due on this date")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     status: Literal["paid", "upcoming", "overdue"] = Field(
         ...,
         description="paid = already paid; upcoming = future due; overdue = past due not yet paid",

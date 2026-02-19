@@ -200,11 +200,13 @@ class PaymentService:
         amount_received = _ensure_non_negative_amount(
             (pi.get("amount_received") or pi.get("amount") or 0) / 100.0
         )
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         payment = await self._record_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=amount_received,
+            emi_amount=emi_amt,
             status="completed",
         )
 
@@ -213,6 +215,9 @@ class PaymentService:
             vehicle = await self.db.get(Vehicle, loan.vehicle_id)
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             customer_name = f"{customer.first_name} {customer.last_name}"
+            emi_amt_val = getattr(payment, "emi_amount", None)
+            if emi_amt_val is None:
+                emi_amt_val = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             transaction = TransactionItem(
                 id=payment.id,
                 loan_id=payment.loan_id,
@@ -220,6 +225,7 @@ class PaymentService:
                 customer_name=customer_name,
                 vehicle_display=vehicle_display,
                 amount=_ensure_non_negative_amount(payment.amount),
+                emi_amount=_ensure_non_negative_amount(emi_amt_val),
                 payment_method=payment.payment_method,
                 status=payment.status,
                 payment_date=payment.payment_date,
@@ -311,6 +317,7 @@ class PaymentService:
         customer_name = f"{customer.first_name} {customer.last_name}"
         return {
             "amount": amount,
+            "emi_amount": amount,
             "amount_cents": amount_cents,
             "currency": settings.STRIPE_CURRENCY or "usd",
             "client_secret": result["client_secret"],
@@ -370,6 +377,7 @@ class PaymentService:
                 vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         return {
             "amount": amount,
+            "emi_amount": amount,
             "amount_cents": amount_cents,
             "currency": currency,
             "status": status,
@@ -417,11 +425,14 @@ class PaymentService:
         amount_received = _ensure_non_negative_amount(
             (pi.get("amount_received") or pi.get("amount") or 0) / 100.0
         )
+        loan = await self.db.get(Loan, loan_id)
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount) if loan else amount_received
         payment = await self._record_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=amount_received,
+            emi_amount=emi_amt,
             status="completed",
         )
         if not payment:
@@ -439,6 +450,7 @@ class PaymentService:
             vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+            emi_amt_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
             transaction = TransactionItem(
                 id=payment.id,
                 loan_id=payment.loan_id,
@@ -446,6 +458,7 @@ class PaymentService:
                 customer_name=customer_name,
                 vehicle_display=vehicle_display,
                 amount=_ensure_non_negative_amount(payment.amount),
+                emi_amount=_ensure_non_negative_amount(emi_amt_val),
                 payment_method=payment.payment_method,
                 status=payment.status,
                 payment_date=payment.payment_date,
@@ -474,6 +487,7 @@ class PaymentService:
         customer_id: UUID,
         due_date: datetime,
         amount: float,
+        emi_amount: float | None = None,
         status: str = "completed",
     ) -> Payment | None:
         """Create payment record. Idempotent: returns None if already exists for this loan + due date."""
@@ -489,6 +503,7 @@ class PaymentService:
             loan_id=loan_id,
             customer_id=customer_id,
             amount=amount,
+            emi_amount=emi_amount,
             payment_method="card",
             payment_date=datetime.utcnow(),
             due_date=due_date,
@@ -506,6 +521,7 @@ class PaymentService:
         due_date: datetime,
         amount: float,
         payment_method: str,
+        emi_amount: float | None = None,
         note: str | None = None,
     ) -> Payment | None:
         """Create manual payment record. Returns None if duplicate (completed payment already exists for loan + due date)."""
@@ -522,6 +538,7 @@ class PaymentService:
             loan_id=loan_id,
             customer_id=customer_id,
             amount=amount,
+            emi_amount=emi_amount,
             payment_method=payment_method,
             payment_date=datetime.utcnow(),
             due_date=due_date,
@@ -574,12 +591,14 @@ class PaymentService:
         validated = await self.validate_due_date_for_loan(loan_id, customer_id, due_dt, only_completed=True)
         if not validated:
             return None  # Invalid or already paid/waived due date
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         payment = await self._record_manual_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=0.0,
             payment_method="waived",
+            emi_amount=emi_amt,
             note=note or "Installment waived by admin",
         )
         if not payment:
@@ -596,6 +615,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=0.0,
+            emi_amount=emi_amt,
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -660,12 +680,14 @@ class PaymentService:
         if not validated:
             return None  # Invalid or already paid due date
         amount_safe = _ensure_non_negative_amount(amount)
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         payment = await self._record_manual_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=amount_safe,
             payment_method=payment_method,
+            emi_amount=emi_amt,
             note=note,
         )
         if not payment:
@@ -690,6 +712,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=_ensure_non_negative_amount(payment.amount),
+            emi_amount=emi_amt,
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -720,6 +743,9 @@ class PaymentService:
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for p, c, v, loan in result.all():
+            emi_val = getattr(p, "emi_amount", None)
+            if emi_val is None:
+                emi_val = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             items.append(
                 TransactionItem(
                     id=p.id,
@@ -728,6 +754,7 @@ class PaymentService:
                     customer_name=f"{c.first_name} {c.last_name}",
                     vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
                     amount=_ensure_non_negative_amount(p.amount),
+                    emi_amount=_ensure_non_negative_amount(emi_val),
                     payment_method=p.payment_method,
                     status=p.status,
                     payment_date=p.payment_date,
@@ -800,6 +827,9 @@ class PaymentService:
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for p, c, v, loan in result.all():
+            emi_val = getattr(p, "emi_amount", None)
+            if emi_val is None:
+                emi_val = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             items.append(
                 TransactionItem(
                     id=p.id,
@@ -808,6 +838,7 @@ class PaymentService:
                     customer_name=f"{c.first_name} {c.last_name}",
                     vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
                     amount=_ensure_non_negative_amount(p.amount),
+                    emi_amount=_ensure_non_negative_amount(emi_val),
                     payment_method=p.payment_method,
                     status=p.status,
                     payment_date=p.payment_date,
@@ -872,9 +903,11 @@ class PaymentService:
                 )
                 .order_by(Payment.due_date.asc())
             )
+            emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             for p in paid_result.scalars().all():
                 amt = _ensure_non_negative_amount(p.amount)
                 total_collected += amt
+                emi_val = getattr(p, "emi_amount", None) or emi_amt
                 paid_dues.append(
                     DueEntryItem(
                         loan_id=loan.id,
@@ -883,6 +916,7 @@ class PaymentService:
                         vehicle_display=vehicle_display,
                         due_date=p.due_date,
                         amount=amt,
+                        emi_amount=_ensure_non_negative_amount(emi_val),
                         payment_date=p.payment_date,
                         payment_id=p.id,
                         days_overdue=None,
@@ -918,6 +952,7 @@ class PaymentService:
                             vehicle_display=vehicle_display,
                             due_date=due_dt,
                             amount=amount,
+                            emi_amount=amount,
                             payment_date=None,
                             payment_id=None,
                             days_overdue=days_overdue,
@@ -936,6 +971,7 @@ class PaymentService:
                             vehicle_display=vehicle_display,
                             due_date=due_dt,
                             amount=amount,
+                            emi_amount=amount,
                             payment_date=None,
                             payment_id=None,
                             days_overdue=None,
@@ -1032,6 +1068,7 @@ class PaymentService:
                     vehicle_display=vehicle_display,
                     unpaid_count=len(unpaid_dates),
                     total_unpaid_amount=total_unpaid,
+                    emi_amount=amount_per,
                     next_due_date=next_due,
                     next_due_date_iso=next_due.isoformat(),
                     loan_status=_loan_status_display(loan),
@@ -1106,6 +1143,7 @@ class PaymentService:
                         due_date=due_dt,
                         due_date_iso=due_dt.isoformat(),
                         amount=amount,
+                        emi_amount=amount,
                         days_overdue=days_overdue,
                         days_until_due=days_until_due,
                         loan_status=loan_status,
@@ -1147,6 +1185,7 @@ class PaymentService:
                 if due_d >= today or due_d in paid_completed:
                     continue
                 days_overdue = (today - due_d).days
+                amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                 all_items.append(
                     OverdueItem(
                         loan_id=loan.id,
@@ -1154,7 +1193,8 @@ class PaymentService:
                         customer_name=customer_name,
                         vehicle_display=vehicle_display,
                         due_date=due_dt,
-                        amount=_ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                        amount=amt,
+                        emi_amount=amt,
                         days_overdue=days_overdue,
                         loan_status=_loan_status_display(loan),
                     )
@@ -1283,6 +1323,7 @@ class PaymentService:
         vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+        emi_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
         return TransactionItem(
             id=payment.id,
             loan_id=payment.loan_id,
@@ -1290,6 +1331,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=_ensure_non_negative_amount(payment.amount),
+            emi_amount=_ensure_non_negative_amount(emi_val),
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -1309,6 +1351,7 @@ class PaymentService:
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else ""
         receipt_number = "RCP-" + str(payment.id).replace("-", "").upper()[:12]
+        emi_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
         return {
             "receipt_number": receipt_number,
             "payment_id": payment.id,
@@ -1317,6 +1360,7 @@ class PaymentService:
             "customer_email": customer.email if customer else None,
             "customer_phone": customer.phone if customer else None,
             "amount": _ensure_non_negative_amount(payment.amount),
+            "emi_amount": _ensure_non_negative_amount(emi_val),
             "currency": (settings.STRIPE_CURRENCY or "usd").lower(),
             "payment_method": payment.payment_method or "card",
             "payment_date": payment.payment_date,

@@ -28,6 +28,7 @@ class Payment(Base):
     loan_id = Column(UUID(as_uuid=True), ForeignKey("loans.id"), nullable=False)
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
     amount = Column(Float, nullable=False)
+    emi_amount = Column(Float, nullable=True)  # Expected EMI due for this due date (from loan at time of payment)
     payment_method = Column(String, nullable=False)
     payment_date = Column(DateTime, default=datetime.utcnow, nullable=False)
     due_date = Column(DateTime, nullable=False)  # The due date this payment was for

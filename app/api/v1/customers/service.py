@@ -611,7 +611,7 @@ class CustomerService:
                 else:
                     status = "upcoming"
                 entries.append(
-                    PaymentScheduleEntry(due_date=due_dt, amount=payment_amt, status=status)
+                    PaymentScheduleEntry(due_date=due_dt, amount=payment_amt, emi_amount=payment_amt, status=status)
                 )
 
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
