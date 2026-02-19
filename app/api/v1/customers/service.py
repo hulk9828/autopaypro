@@ -482,6 +482,11 @@ class CustomerService:
             loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
             pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
             payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            term_months = float(loan.loan_term_months)
+            if term_months >= 12 and term_months % 12 == 0:
+                lease_time_display = f"{int(term_months // 12)} year{'s' if term_months > 12 else ''}"
+            else:
+                lease_time_display = f"{int(term_months)} months"
             vehicle_info = VehicleLoanInfo(
                 vehicle_id=vehicle.id,
                 loan_id=loan.id,
@@ -502,6 +507,10 @@ class CustomerService:
                 lease_payment_type=pt,
                 loan_start_date=loan_start_date,
                 loan_end_date=loan_end_date,
+                lease_start_date=loan_start_date,
+                lease_end_date=loan_end_date,
+                lease_term_months=term_months,
+                lease_time_display=lease_time_display,
                 next_payment_due_date=next_payment_due_date,
                 payments_remaining=payments_remaining,
                 loan_status=loan_status,
@@ -519,7 +528,7 @@ class CustomerService:
             next_payment_amount=ensure_non_negative_amount(next_payment_amount) if next_payment_amount is not None else None,
             vehicles=vehicles_info
         )
-
+ 
     def _customer_search_filter(self, search: Optional[str]):
         """Build filter for customer search (first_name, last_name, email)."""
         if not search or not search.strip():

@@ -4,6 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -534,6 +535,38 @@ async def admin_notifications(
 
 
 # --- Transaction History (admin) ---
+@router.get(
+    "/transactions/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export transactions to Excel",
+    description="Download transactions data as an Excel (.xlsx) file. Same filters as list: customer_id, loan_id, from_date, to_date.",
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def export_transactions_excel(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+    customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
+    loan_id: Optional[UUID] = Query(None, description="Filter by loan ID"),
+    from_date: Optional[date] = Query(None, description="Filter from date (payment_date)"),
+    to_date: Optional[date] = Query(None, description="Filter to date (payment_date)"),
+):
+    """Export transactions to Excel (.xlsx). Admin only."""
+    service = PaymentService(db)
+    content = await service.export_transactions_to_excel(
+        customer_id=customer_id,
+        loan_id=loan_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    filename = "transactions_export.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get(
     "/transactions",
     response_model=AdminTransactionHistoryResponse,

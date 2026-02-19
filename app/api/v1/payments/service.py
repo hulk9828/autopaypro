@@ -1,6 +1,9 @@
+import io
 from datetime import date, datetime, timedelta
 from uuid import UUID
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -848,6 +851,82 @@ class PaymentService:
                 )
             )
         return items, total, total_amount, completed_count, failed_count
+
+    async def export_transactions_to_excel(
+        self,
+        customer_id: UUID | None = None,
+        loan_id: UUID | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> bytes:
+        """Export transactions to Excel (.xlsx). Same filters as list_transactions_admin (no pagination)."""
+        base = (
+            select(Payment, Customer, Vehicle, Loan)
+            .join(Loan, Payment.loan_id == Loan.id)
+            .join(Customer, Payment.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .order_by(Payment.payment_date.desc())
+        )
+        if customer_id is not None:
+            base = base.where(Payment.customer_id == customer_id)
+        if loan_id is not None:
+            base = base.where(Payment.loan_id == loan_id)
+        if from_date is not None:
+            base = base.where(func.date(Payment.payment_date) >= from_date)
+        if to_date is not None:
+            base = base.where(func.date(Payment.payment_date) <= to_date)
+        result = await self.db.execute(base)
+        rows = result.all()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Transactions"
+
+        headers = [
+            "Payment ID",
+            "Loan ID",
+            "Customer ID",
+            "Customer Name",
+            "Vehicle",
+            "Amount",
+            "EMI Amount",
+            "Payment Method",
+            "Status",
+            "Payment Date",
+            "Due Date",
+            "Loan Status",
+            "Created At",
+        ]
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+
+        for row_idx, (p, c, v, loan) in enumerate(rows, start=2):
+            customer_name = f"{c.first_name} {c.last_name}"
+            vehicle_display = f"{v.year} {v.make} {v.model}" if v else ""
+            emi_val = getattr(p, "emi_amount", None) or _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            payment_date_str = p.payment_date.strftime("%Y-%m-%d %H:%M:%S") if hasattr(p.payment_date, "strftime") else str(p.payment_date)
+            due_date_str = p.due_date.strftime("%Y-%m-%d %H:%M:%S") if hasattr(p.due_date, "strftime") else str(p.due_date)
+            created_str = p.created_at.strftime("%Y-%m-%d %H:%M:%S") if p.created_at and hasattr(p.created_at, "strftime") else str(p.created_at or "")
+            ws.cell(row=row_idx, column=1, value=str(p.id))
+            ws.cell(row=row_idx, column=2, value=str(p.loan_id))
+            ws.cell(row=row_idx, column=3, value=str(p.customer_id))
+            ws.cell(row=row_idx, column=4, value=customer_name)
+            ws.cell(row=row_idx, column=5, value=vehicle_display)
+            ws.cell(row=row_idx, column=6, value=_ensure_non_negative_amount(p.amount))
+            ws.cell(row=row_idx, column=7, value=_ensure_non_negative_amount(emi_val))
+            ws.cell(row=row_idx, column=8, value=p.payment_method or "")
+            ws.cell(row=row_idx, column=9, value=p.status or "")
+            ws.cell(row=row_idx, column=10, value=payment_date_str)
+            ws.cell(row=row_idx, column=11, value=due_date_str)
+            ws.cell(row=row_idx, column=12, value=_loan_status_display(loan))
+            ws.cell(row=row_idx, column=13, value=created_str)
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer.getvalue()
 
     async def get_payment_summary_admin(
         self,

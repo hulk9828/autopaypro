@@ -179,6 +179,10 @@ class VehicleLoanInfo(BaseModel):
     lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     loan_start_date: datetime
     loan_end_date: datetime
+    lease_start_date: datetime = Field(..., description="When the lease for this vehicle started")
+    lease_end_date: datetime = Field(..., description="When the lease for this vehicle ends")
+    lease_term_months: float = Field(..., description="Lease duration in months")
+    lease_time_display: str = Field(..., description="Human-readable lease duration, e.g. '24 months' or '2 years'")
     next_payment_due_date: datetime
     payments_remaining: int
     loan_status: Literal["open", "closed"] = Field(
