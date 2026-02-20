@@ -174,7 +174,8 @@ class VehicleLoanInfo(BaseModel):
     bi_weekly_payment_amount: float
     payment_amount: float = Field(..., description="Amount due per payment (same as bi_weekly_payment_amount; varies by lease_payment_type frequency)")
     payment_schedule_description: str = Field(..., description="Human-readable payment frequency, e.g. 'Every 2 weeks (bi-weekly)', 'Monthly', 'Twice per month (1st and 15th)'")
-    remaining_balance: float
+    remaining_balance: float = Field(..., description="Amount left to pay (loan.amount_financed)")
+    total_paid: float = Field(0, description="Total amount paid so far (loan.total_paid)")
     loan_term_months: float
     lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     loan_start_date: datetime
@@ -238,9 +239,10 @@ class PaymentScheduleEntry(BaseModel):
     due_date: datetime = Field(..., description="Date and time when this payment is due")
     amount: float = Field(..., description="Amount due on this date")
     emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
-    status: Literal["paid", "upcoming", "overdue"] = Field(
+    paid_amount: float = Field(0, description="Amount already paid toward this due date")
+    status: Literal["paid", "partially_paid", "upcoming", "overdue"] = Field(
         ...,
-        description="paid = already paid; upcoming = future due; overdue = past due not yet paid",
+        description="paid = fully paid; partially_paid = some paid; overdue = past due unpaid; upcoming = future",
     )
 
 

@@ -46,7 +46,7 @@ router = APIRouter()
     response_model=CheckoutResponse,
     status_code=status.HTTP_200_OK,
     summary="Create checkout (admin)",
-    description="Create a checkout: get payment details for a due installment (amount, Stripe client_secret, payment_intent_id). Identify customer by email or customer_id. JWT protected, admin only.",
+    description="Create checkout: pay any amount. Returns Stripe client_secret and payment_intent_id. Identify customer by email or customer_id.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -55,12 +55,11 @@ async def create_checkout(
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create checkout (admin only): returns payment details and Stripe PaymentIntent client_secret for client-side payment form."""
+    """Create checkout (admin only): returns payment details and Stripe PaymentIntent client_secret for flexible amount."""
     service = PaymentService(db)
     result = await service.get_checkout(
         loan_id=data.loan_id,
-        payment_type=data.payment_type,
-        due_date_iso=data.due_date_iso,
+        payment_amount=data.payment_amount,
         email=data.email,
         customer_id=data.customer_id,
     )
@@ -117,7 +116,7 @@ async def confirm_payment(
     response_model=MakePaymentResponse,
     status_code=status.HTTP_200_OK,
     summary="Make payment",
-    description="Process a payment using card token for next or due amount. No raw card details stored.",
+    description="Flexible payment: pay any amount. Applied to earliest dues first (overdue, unpaid, future).",
     tags=["payments"],
 )
 async def make_payment(
@@ -125,28 +124,21 @@ async def make_payment(
     current_customer: Customer = Depends(get_current_customer),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accepts card_token, processes payment for next or due amount, updates payment status."""
-    # Log request parameters (mask card_token for security)
-    card_preview = f"{data.card_token[:20]}...({len(data.card_token)} chars)" if len(data.card_token) > 20 else "***"
-    logger.info(
-        "POST /payments/ request: loan_id=%s payment_type=%s due_date_iso=%s card_token=%s",
-        data.loan_id,
-        data.payment_type,
-        data.due_date_iso,
-        card_preview,
-    )
+    """Accepts card_token and payment_amount. Flexible: pay any amount; applied to earliest dues first."""
     service = PaymentService(db)
     result = await service.make_payment(
         customer_id=current_customer.id,
         loan_id=data.loan_id,
         card_token=data.card_token,
-        payment_type=data.payment_type,
-        due_date_iso=data.due_date_iso,
+        payment_amount=data.payment_amount,
     )
     return MakePaymentResponse(
         success=result["success"],
         message=result["message"],
         transaction=result.get("transaction"),
+        charged_amount=result.get("charged_amount", 0),
+        requested_amount=result.get("requested_amount", 0),
+        excess_ignored=result.get("excess_ignored"),
     )
 
 

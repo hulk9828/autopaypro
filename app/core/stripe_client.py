@@ -19,7 +19,7 @@ def create_payment_intent(
     *,
     loan_id: UUID,
     customer_id: UUID,
-    due_date_iso: str,
+    due_date_iso: str = "",
     customer_email: str | None = None,
 ) -> dict:
     """
@@ -40,7 +40,7 @@ def create_payment_intent(
         metadata={
             "loan_id": str(loan_id),
             "customer_id": str(customer_id),
-            "due_date_iso": due_date_iso,
+            "due_date_iso": due_date_iso or "flexible",
         },
         receipt_email=customer_email or None,
     )

@@ -33,6 +33,7 @@ from app.models.vehicle import Vehicle
 from app.models.customer_vehicle import CustomerVehicle
 from app.models.loan import Loan
 from app.models.payment import Payment
+from app.api.v1.payments.service import PaymentService
 from app.core.loan_schedule import get_due_dates_range
 from app.models.enums import VehicleStatus, AccountStatus
 from app.core.security import get_password_hash, verify_password
@@ -466,16 +467,14 @@ class CustomerService:
             loan_end_date = loan_start_date + timedelta(days=int(loan.loan_term_months * 30.44))
             pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
             total_payments = int(loan.loan_term_months) if pt == "monthly" else int(loan.loan_term_months * 2)
-            next_payment_due_date = await self._get_next_payment_due_date(loan)
+            payment_service = PaymentService(self.db)
+            next_payment_due_date = await self._get_next_payment_due_date(loan, payment_service)
             if next_payment_due_date is None:
                 next_payment_due_date = loan_end_date
-            payments_result = await self.db.execute(
-                select(Payment).where(Payment.loan_id == loan.id)
-            )
-            payments_made = len(payments_result.scalars().all())
-            remaining_balance = loan.amount_financed - (payments_made * loan.bi_weekly_payment_amount)
-            remaining_balance = max(0.0, remaining_balance)
-            payments_remaining = max(0, total_payments - payments_made)
+            remaining_balance = max(0.0, float(getattr(loan, "amount_financed", 0)))
+            total_paid = float(getattr(loan, "total_paid", 0))
+            paid_dates = await payment_service.get_paid_due_dates_for_loan(loan.id)
+            payments_remaining = max(0, total_payments - len(paid_dates))
             if earliest_next_due is None or (next_payment_due_date and next_payment_due_date < earliest_next_due):
                 earliest_next_due = next_payment_due_date
                 next_payment_amount = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
@@ -503,6 +502,7 @@ class CustomerService:
                 payment_amount=payment_amt,
                 payment_schedule_description=_payment_schedule_description(pt),
                 remaining_balance=remaining_balance,
+                total_paid=total_paid,
                 loan_term_months=loan.loan_term_months,
                 lease_payment_type=pt,
                 loan_start_date=loan_start_date,
@@ -540,7 +540,7 @@ class CustomerService:
             Customer.email.ilike(term),
         )
 
-    async def _get_next_payment_due_date(self, loan: Loan) -> Optional[datetime]:
+    async def _get_next_payment_due_date(self, loan: Loan, payment_service: PaymentService) -> Optional[datetime]:
         """Calculate the next payment due date for a loan (uses lease_payment_type)."""
         if getattr(loan, "status", "active") == "closed":
             return None
@@ -554,21 +554,15 @@ class CustomerService:
             today,
             to_date,
         )
-        payments_result = await self.db.execute(
-            select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan.id)
-        )
-        paid = {r.d for r in payments_result.all()}
+        paid = await payment_service.get_paid_due_dates_for_loan(loan.id)
         for due_dt in due_dates:
             if due_dt.date() not in paid:
                 return due_dt
         return None
 
-    async def _get_paid_due_dates_for_loan(self, loan_id: uuid.UUID) -> set[date]:
-        """Set of (due_date as date) that have been paid for this loan."""
-        result = await self.db.execute(
-            select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan_id)
-        )
-        return {r.d for r in result.all()}
+    async def _get_paid_due_dates_for_loan(self, loan_id: uuid.UUID, payment_service: PaymentService) -> set[date]:
+        """Set of (due_date as date) fully paid for this loan."""
+        return await payment_service.get_paid_due_dates_for_loan(loan_id)
 
     async def get_customer_payment_schedule(
         self,
@@ -607,20 +601,30 @@ class CustomerService:
                 start,
                 end,
             )
-            paid_dates = await self._get_paid_due_dates_for_loan(loan.id)
+            payment_service = PaymentService(self.db)
+            paid_per = await payment_service.get_paid_amount_per_due_date(loan.id)
             now = datetime.utcnow()
 
             entries: List[PaymentScheduleEntry] = []
             for due_dt in due_dates:
                 d = due_dt.date()
-                if d in paid_dates:
+                paid_amt = paid_per.get(d, 0)
+                if paid_amt >= payment_amt - 0.01:
                     status = "paid"
+                elif paid_amt > 0:
+                    status = "partially_paid"
                 elif due_dt < now:
                     status = "overdue"
                 else:
                     status = "upcoming"
                 entries.append(
-                    PaymentScheduleEntry(due_date=due_dt, amount=payment_amt, emi_amount=payment_amt, status=status)
+                    PaymentScheduleEntry(
+                        due_date=due_dt,
+                        amount=payment_amt,
+                        emi_amount=payment_amt,
+                        paid_amount=paid_amt,
+                        status=status,
+                    )
                 )
 
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
@@ -645,6 +649,7 @@ class CustomerService:
     async def _count_overdue_accounts(self) -> int:
         """Count customers with at least one overdue payment."""
         today = datetime.utcnow()
+        payment_service = PaymentService(self.db)
         loans_result = await self.db.execute(
             select(Loan, Customer)
             .join(Customer, Loan.customer_id == Customer.id)
@@ -652,7 +657,7 @@ class CustomerService:
         )
         count = 0
         for loan, _ in loans_result.all():
-            next_due_date = await self._get_next_payment_due_date(loan)
+            next_due_date = await self._get_next_payment_due_date(loan, payment_service)
             if next_due_date and next_due_date < today:
                 payment_exists = await self.db.execute(
                     select(Payment).where(
@@ -830,8 +835,9 @@ class CustomerService:
         loan_details = []
         earliest_next_due: Optional[datetime] = None
         next_payment_amount_val: Optional[float] = None
+        payment_service = PaymentService(self.db)
         for loan, vehicle in loans_with_vehicles:
-            next_due = await self._get_next_payment_due_date(loan)
+            next_due = await self._get_next_payment_due_date(loan, payment_service)
             if earliest_next_due is None or (next_due and next_due < earliest_next_due):
                 earliest_next_due = next_due
                 next_payment_amount_val = ensure_non_negative_amount(loan.bi_weekly_payment_amount)

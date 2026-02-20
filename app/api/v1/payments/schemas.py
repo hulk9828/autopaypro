@@ -59,24 +59,14 @@ class TransactionItem(BaseModel):
 
 # --- Make Payment (card token) ---
 class MakePaymentRequest(BaseModel):
-    """Request to make a payment using card tokenization. No raw card details."""
+    """Request to make a flexible payment. Pay any amount; applied to earliest dues first."""
+    loan_id: UUID = Field(..., description="Loan to pay")
+    payment_amount: float = Field(..., gt=0, description="Amount to pay (any positive amount)")
     card_token: str = Field(
         ...,
         min_length=1,
-        description="Stripe PaymentMethod ID (pm_xxx) or card token (tok_xxx). Do NOT send the PaymentIntent client_secret (pi_xxx_secret_xxx).",
+        description="Stripe PaymentMethod ID (pm_xxx) or card token (tok_xxx). Do NOT send the PaymentIntent client_secret.",
     )
-    loan_id: UUID = Field(..., description="Loan to pay")
-    payment_type: Literal["next", "due"] = Field(
-        ...,
-        description="'next' = next scheduled unpaid amount; 'due' = specific due date (requires due_date_iso)",
-    )
-    due_date_iso: str | None = Field(None, description="Required when payment_type is 'due'. ISO date/datetime for the due date.")
-
-    @model_validator(mode="after")
-    def due_date_required_when_due_type(self):
-        if self.payment_type == "due" and not (self.due_date_iso and self.due_date_iso.strip()):
-            raise ValueError("due_date_iso is required when payment_type is 'due'")
-        return self
 
     @model_validator(mode="after")
     def card_token_not_client_secret(self):
@@ -94,25 +84,18 @@ class MakePaymentResponse(BaseModel):
     success: bool = Field(..., description="Whether the payment was processed successfully")
     message: str = Field(..., description="Human-readable result message")
     transaction: TransactionItem | None = Field(None, description="Created transaction when success=True")
+    charged_amount: float = Field(0, description="Amount actually charged (may be less than requested if overpay)")
+    requested_amount: float = Field(0, description="Amount that was requested")
+    excess_ignored: float | None = Field(None, description="Excess amount not charged when payment_amount > remaining_balance")
 
 
 # --- Public checkout (no auth): get payment details + Stripe client_secret ---
 class CheckoutRequest(BaseModel):
-    """Request for checkout: identify customer and due; no auth required."""
+    """Request for checkout: identify customer and amount. Flexible: pay any amount."""
     loan_id: UUID = Field(..., description="Loan to pay")
-    payment_type: Literal["next", "due"] = Field(
-        ...,
-        description="'next' = next scheduled unpaid; 'due' = specific due date (requires due_date_iso)",
-    )
-    due_date_iso: str | None = Field(None, description="Required when payment_type is 'due'. ISO date for the due date.")
+    payment_amount: float = Field(..., gt=0, description="Amount to pay (any positive amount)")
     email: str | None = Field(None, description="Customer email (use email or customer_id to identify customer)")
     customer_id: UUID | None = Field(None, description="Customer ID (use email or customer_id to identify customer)")
-
-    @model_validator(mode="after")
-    def due_date_required_when_due_type(self):
-        if self.payment_type == "due" and not (self.due_date_iso and self.due_date_iso.strip()):
-            raise ValueError("due_date_iso is required when payment_type is 'due'")
-        return self
 
     @model_validator(mode="after")
     def require_email_or_customer_id(self):
