@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -54,3 +55,13 @@ def decode_access_token(token: str) -> Optional[dict]:
         return decoded_payload
     except JWTError:
         return None
+
+
+def create_password_reset_token() -> str:
+    """Generate a secure random token for password reset (e.g. to store and send in email)."""
+    return secrets.token_urlsafe(32)
+
+
+def create_password_reset_otp() -> str:
+    """Generate a 6-digit numeric OTP for password reset."""
+    return "".join(secrets.choice("0123456789") for _ in range(6))

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -8,8 +9,9 @@ from sqlalchemy import select
 from app.api.v1.admins.schemas import AdminCreate, AdminLogin, AdminProfileUpdate, AdminChangePassword
 from app.core.exceptions import AppException
 from app.core import s3 as s3_module
+from app.core import email as email_module
 from app.models.admin import Admin
-from app.core.security import get_password_hash, verify_password
+from app.core.security import get_password_hash, verify_password, create_password_reset_otp
 from app.models.enums import Role
 
 
@@ -102,5 +104,57 @@ class AdminService:
         if not verify_password(data.current_password, admin.password_hash):
             AppException().raise_400("Current password is incorrect")
         admin.password_hash = get_password_hash(data.new_password)
+        self.db.add(admin)
+        await self.db.commit()
+
+    async def request_password_reset(self, email: str) -> None:
+        """
+        Generate a 6-digit OTP for the admin, store it with expiry (10 min), and send OTP to email.
+        Does not reveal whether the email exists (always return success for security).
+        """
+        admin = await self.get_admin_by_email(email)
+        if not admin:
+            return
+        otp = create_password_reset_otp()
+        # Use naive UTC for TIMESTAMP WITHOUT TIME ZONE (asyncpg rejects aware datetimes). OTP valid 10 min.
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(tzinfo=None)
+        admin.password_reset_token = otp
+        admin.password_reset_token_expires_at = expires_at
+        self.db.add(admin)
+        await self.db.commit()
+
+        await email_module.send_admin_password_reset_otp_email(
+            admin_email=admin.email,
+            otp_code=otp,
+        )
+
+    async def verify_otp(self, email: str, otp: str) -> None:
+        """Verify OTP for the given admin email. Raises if invalid or expired."""
+        admin = await self.get_admin_by_email(email)
+        if not admin:
+            AppException().raise_400("Invalid or expired OTP")
+        now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        if (
+            admin.password_reset_token != otp
+            or admin.password_reset_token_expires_at is None
+            or admin.password_reset_token_expires_at <= now_utc_naive
+        ):
+            AppException().raise_400("Invalid or expired OTP")
+
+    async def reset_password_with_otp(self, email: str, otp: str, new_password: str) -> None:
+        """Verify OTP for email, then set new password and clear OTP."""
+        admin = await self.get_admin_by_email(email)
+        if not admin:
+            AppException().raise_400("Invalid or expired OTP")
+        now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        if (
+            admin.password_reset_token != otp
+            or admin.password_reset_token_expires_at is None
+            or admin.password_reset_token_expires_at <= now_utc_naive
+        ):
+            AppException().raise_400("Invalid or expired OTP")
+        admin.password_hash = get_password_hash(new_password)
+        admin.password_reset_token = None
+        admin.password_reset_token_expires_at = None
         self.db.add(admin)
         await self.db.commit()

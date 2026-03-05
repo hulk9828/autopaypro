@@ -1,6 +1,9 @@
+import io
 from datetime import date, datetime, timedelta
 from uuid import UUID
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,10 +24,11 @@ from app.core.stripe_client import create_payment_intent, confirm_payment_intent
 from app.api.v1.notifications.service import send_notification_to_customers
 from app.models.customer import Customer
 from app.models.loan import Loan
-from app.models.payment import Payment, PaymentStatus
+from app.models.payment import Payment, PaymentMode, PaymentStatus
 from app.models.payment_notification_log import PaymentNotificationLog
 from app.models.vehicle import Vehicle
 from app.core.utils import ensure_non_negative_amount as _ensure_non_negative_amount
+from app.core.loan_schedule import get_due_dates_range as _schedule_due_dates_range
 
 
 def _loan_status_display(loan: Loan | None) -> str:
@@ -34,26 +38,16 @@ def _loan_status_display(loan: Loan | None) -> str:
     return "completed" if getattr(loan, "status", "active") == "closed" else "active"
 
 
-def _get_bi_weekly_due_dates_range(
-    loan_created_at: datetime,
-    term_months: float,
-    from_date: date,
-    to_date: date,
-) -> list[datetime]:
-    """Return bi-weekly due datetimes for a loan between from_date and to_date (inclusive)."""
-    first_due = loan_created_at + timedelta(days=14)
-    if first_due.date() > to_date:
-        return []
-    due_dates: list[datetime] = []
-    d = first_due
-    max_payments = max(1, int(term_months * 2) + 24)
-    for _ in range(max_payments):
-        if d.date() > to_date:
-            break
-        if d.date() >= from_date:
-            due_dates.append(d)
-        d += timedelta(days=14)
-    return due_dates
+def _get_due_dates_range(loan: Loan, from_date: date, to_date: date) -> list[datetime]:
+    """Return due datetimes for a loan between from_date and to_date (uses loan.lease_payment_type)."""
+    payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+    return _schedule_due_dates_range(
+        loan.created_at,
+        loan.loan_term_months,
+        payment_type,
+        from_date,
+        to_date,
+    )
 
 
 def _parse_due_date_iso(due_date_iso: str) -> datetime:
@@ -65,26 +59,76 @@ def _parse_due_date_iso(due_date_iso: str) -> datetime:
         raise ValueError("Invalid due_date_iso format")
 
 
+def _round_amount(val: float) -> float:
+    return round(max(0.0, val), 2)
+
+
 class PaymentService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _get_paid_amount_per_due_date(self, loan_id: UUID, completed_only: bool = True) -> dict[date, float]:
+        """
+        Aggregate paid amount per due_date from all payments.
+        Legacy: due_date + amount. Flexible: applied_installments JSON.
+        """
+        q = select(Payment).where(Payment.loan_id == loan_id)
+        if completed_only:
+            q = q.where(Payment.status == PaymentStatus.completed.value)
+        result = await self.db.execute(q)
+        paid: dict[date, float] = {}
+        for p in result.scalars().all():
+            if getattr(p, "applied_installments", None) and isinstance(p.applied_installments, list):
+                for entry in p.applied_installments:
+                    if isinstance(entry, dict):
+                        due_str = entry.get("due_date")
+                        amt = float(entry.get("applied_amount") or 0)
+                        if due_str and amt > 0:
+                            try:
+                                due_dt = datetime.fromisoformat(due_str.replace("Z", "+00:00"))
+                                d = due_dt.date() if hasattr(due_dt, "date") else due_dt
+                                paid[d] = paid.get(d, 0) + amt
+                            except (ValueError, TypeError):
+                                pass
+            else:
+                d = p.due_date.date() if hasattr(p.due_date, "date") else p.due_date
+                amt = _ensure_non_negative_amount(p.amount)
+                paid[d] = paid.get(d, 0) + amt
+        return paid
+
     async def _get_paid_due_dates_for_loan(self, loan_id: UUID) -> set[date]:
-        """Set of (due_date as date) already paid for this loan."""
-        result = await self.db.execute(
-            select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan_id)
-        )
-        return {r.d for r in result.all()}
+        """Set of (due_date as date) fully paid for this loan (paid_amount >= installment_amount)."""
+        loan = await self.db.get(Loan, loan_id)
+        if not loan:
+            return set()
+        paid_per = await self._get_paid_amount_per_due_date(loan_id, completed_only=False)
+        today = date.today()
+        from_date = today - timedelta(days=365)
+        to_date = today + timedelta(days=365 * 2)
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
+        amt_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+        return {d.date() for d in due_dates if paid_per.get(d.date(), 0) >= amt_per - 0.01}
 
     async def _get_paid_due_dates_for_loan_completed(self, loan_id: UUID) -> set[date]:
-        """Set of (due_date as date) with a completed payment for this loan."""
-        result = await self.db.execute(
-            select(func.date(Payment.due_date).label("d")).where(
-                Payment.loan_id == loan_id,
-                Payment.status == PaymentStatus.completed.value,
-            )
-        )
-        return {r.d for r in result.all()}
+        """Set of (due_date as date) fully paid with completed payments only."""
+        loan = await self.db.get(Loan, loan_id)
+        if not loan:
+            return set()
+        paid_per = await self._get_paid_amount_per_due_date(loan_id, completed_only=True)
+        today = date.today()
+        from_date = today - timedelta(days=365)
+        to_date = today + timedelta(days=365 * 2)
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
+        amt_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+        return {d.date() for d in due_dates if paid_per.get(d.date(), 0) >= amt_per - 0.01}
+
+    async def get_paid_due_dates_for_loan(self, loan_id: UUID) -> set[date]:
+        """Public: set of due dates fully paid (paid_amount >= installment_amount). For use by CustomerService etc."""
+        return await self._get_paid_due_dates_for_loan_completed(loan_id)
+
+    async def get_paid_amount_per_due_date(self, loan_id: UUID) -> dict[date, float]:
+        """Public: paid amount per due_date for this loan (completed payments only)."""
+        return await self._get_paid_amount_per_due_date(loan_id, completed_only=True)
 
     async def get_next_unpaid_due(self, loan_id: UUID, customer_id: UUID) -> tuple[datetime, float] | None:
         """
@@ -99,12 +143,7 @@ class PaymentService:
         today = date.today()
         from_date = today
         to_date = today + timedelta(days=365 * 2)
-        due_dates = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
         paid = await self._get_paid_due_dates_for_loan(loan_id)
         for due_dt in due_dates:
             if due_dt.date() not in paid:
@@ -129,15 +168,10 @@ class PaymentService:
         )
         if due_d in paid:
             return None
-        # Check due_d is one of the scheduled due dates
-        from_date = due_d - timedelta(days=14 * 30)
-        to_date = due_d + timedelta(days=14)
-        scheduled = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        # Check due_d is one of the scheduled due dates (window works for bi_weekly, monthly, semi_monthly)
+        from_date = due_d - timedelta(days=60)
+        to_date = due_d + timedelta(days=60)
+        scheduled = _get_due_dates_range(loan, from_date, to_date)
         for s in scheduled:
             if s.date() == due_d:
                 return (s, loan.bi_weekly_payment_amount)
@@ -148,51 +182,41 @@ class PaymentService:
         customer_id: UUID,
         loan_id: UUID,
         card_token: str,
-        payment_type: str,
-        due_date_iso: str | None = None,
+        payment_amount: float,
     ) -> dict:
         """
-        Process payment via card token for next or due amount.
-        Returns dict with success, message, transaction (TransactionItem or None).
+        Flexible payment: pay any amount. Applied to earliest dues first.
+        Returns dict with success, message, transaction, charged_amount, requested_amount, excess_ignored.
         """
-        print(f"{customer_id} {loan_id} {card_token} {payment_type} {due_date_iso}")
         if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
             AppException().raise_400("Stripe is not configured")
+        if payment_amount <= 0:
+            AppException().raise_400("payment_amount must be greater than 0")
 
-        loan = await self.db.get(Loan, loan_id)
+        # Lock loan row for concurrency
+        loan_row = await self.db.execute(
+            select(Loan).where(Loan.id == loan_id).with_for_update()
+        )
+        loan = loan_row.scalar_one_or_none()
         if not loan:
             AppException().raise_404("Loan not found")
         if loan.customer_id != customer_id:
             AppException().raise_403("You can only pay for your own loan")
+        if getattr(loan, "status", "active") == "closed":
+            AppException().raise_400("Loan already completed")
+
         customer = await self.db.get(Customer, customer_id)
         if not customer:
             AppException().raise_404("Customer not found")
 
-        due_dt: datetime
-        amount: float
+        remaining_balance = _round_amount(float(getattr(loan, "amount_financed", 0)))
+        if remaining_balance <= 0:
+            AppException().raise_400("Loan already completed")
 
-        if payment_type == "next":
-            next_info = await self.get_next_unpaid_due(loan_id, customer_id)
-            if not next_info:
-                AppException().raise_400("No next payment due for this loan")
-            due_dt, amount = next_info
-        else:
-            if not due_date_iso or not due_date_iso.strip():
-                AppException().raise_400("due_date_iso is required when payment_type is 'due'")
-            try:
-                due_dt = _parse_due_date_iso(due_date_iso)
-            except ValueError as e:
-                AppException().raise_400(str(e))
-            validated = await self.validate_due_date_for_loan(loan_id, customer_id, due_dt)
-            if not validated:
-                AppException().raise_400("Invalid or already paid due date for this loan")
-            due_dt, amount = validated
-
-        amount_cents = int(round(amount * 100))
+        charge_amount = _round_amount(min(payment_amount, remaining_balance))
+        amount_cents = int(round(charge_amount * 100))
         if amount_cents < 50:
             AppException().raise_400("Amount too small for Stripe (minimum $0.50)")
-
-        due_date_iso_str = due_dt.isoformat()
 
         try:
             result = create_payment_intent(
@@ -200,7 +224,7 @@ class PaymentService:
                 currency=settings.STRIPE_CURRENCY,
                 loan_id=loan_id,
                 customer_id=customer_id,
-                due_date_iso=due_date_iso_str,
+                due_date_iso="flexible",
                 customer_email=customer.email,
             )
             pi = confirm_payment_intent_with_token(result["payment_intent_id"], card_token)
@@ -208,27 +232,68 @@ class PaymentService:
             err_msg = str(e).strip().lower()
             if "no such paymentmethod" in err_msg or "_secret_" in err_msg:
                 AppException().raise_400(
-                    "Invalid card_token: send a PaymentMethod ID (pm_xxx) or token (tok_xxx) from the client. "
-                    "Do not send the PaymentIntent client_secret (pi_xxx_secret_xxx)."
+                    "Invalid card_token: send a PaymentMethod ID (pm_xxx) or token (tok_xxx). "
+                    "Do not send the PaymentIntent client_secret."
                 )
             AppException().raise_400(f"Payment failed: {e}")
 
         if pi.status != "succeeded":
             AppException().raise_400(f"Payment not completed (status: {pi.status})")
 
-        amount_received = _ensure_non_negative_amount(
+        amount_received = _round_amount(
             (pi.get("amount_received") or pi.get("amount") or 0) / 100.0
         )
-        payment = await self._record_payment(
+        paid_per = await self._get_paid_amount_per_due_date(loan_id, completed_only=True)
+        today = date.today()
+        loan_start = (loan.created_at + timedelta(days=14)).date()
+        loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+        to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+        due_dates = _get_due_dates_range(loan, loan_start, to_date)
+        amt_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+        installments: list[tuple[datetime, float, float, float]] = []
+        for due_dt in due_dates:
+            d = due_dt.date()
+            paid = paid_per.get(d, 0)
+            remaining = _round_amount(max(0, amt_per - paid))
+            if remaining > 0:
+                installments.append((due_dt, amt_per, paid, remaining))
+
+        remaining_to_apply = amount_received
+        applied_breakdown: list[dict] = []
+        first_due = None
+        for due_dt, _amt, _paid, rem in installments:
+            if remaining_to_apply <= 0:
+                break
+            applied = _round_amount(min(remaining_to_apply, rem))
+            if applied > 0:
+                applied_breakdown.append({
+                    "due_date": due_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "applied_amount": applied,
+                })
+                if first_due is None:
+                    first_due = due_dt
+                remaining_to_apply -= applied
+
+        loan.amount_financed = _round_amount(max(0, float(loan.amount_financed) - amount_received))
+        loan.total_paid = _round_amount(float(getattr(loan, "total_paid", 0)) + amount_received)
+        if loan.amount_financed <= 0:
+            loan.amount_financed = 0
+            loan.status = "closed"
+        self.db.add(loan)
+
+        payment = await self._record_flexible_payment(
             loan_id=loan_id,
             customer_id=customer_id,
-            due_date=due_dt,
             amount=amount_received,
+            applied_installments=applied_breakdown,
+            first_due=first_due or (due_dates[0] if due_dates else datetime.utcnow()),
             status="completed",
         )
+        await self.db.commit()
 
         transaction = None
         if payment:
+            await self.db.refresh(payment)
             vehicle = await self.db.get(Vehicle, loan.vehicle_id)
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             customer_name = f"{customer.first_name} {customer.last_name}"
@@ -239,6 +304,7 @@ class PaymentService:
                 customer_name=customer_name,
                 vehicle_display=vehicle_display,
                 amount=_ensure_non_negative_amount(payment.amount),
+                emi_amount=_ensure_non_negative_amount(loan.bi_weekly_payment_amount),
                 payment_method=payment.payment_method,
                 status=payment.status,
                 payment_date=payment.payment_date,
@@ -246,7 +312,6 @@ class PaymentService:
                 created_at=payment.created_at,
                 loan_status=_loan_status_display(loan),
             )
-            # When customer makes payment: save his notification (push + log) so he can get it via GET my-notifications
             await send_payment_notification(
                 self.db,
                 customer_id=customer_id,
@@ -255,29 +320,32 @@ class PaymentService:
                 title="Payment received",
                 body=f"Your payment of ${_ensure_non_negative_amount(payment.amount):.2f} has been received.",
             )
-            await self._check_and_close_loan_if_paid(loan_id)
 
+        excess = _round_amount(max(0, payment_amount - charge_amount))
         return {
             "success": True,
             "message": "Payment completed successfully",
             "transaction": transaction,
+            "charged_amount": charge_amount,
+            "requested_amount": _round_amount(payment_amount),
+            "excess_ignored": excess if excess > 0 else None,
         }
 
     async def get_checkout(
         self,
         loan_id: UUID,
-        payment_type: str,
-        due_date_iso: str | None,
+        payment_amount: float,
         email: str | None,
         customer_id: UUID | None,
     ) -> dict:
         """
-        Resolve customer (by email or customer_id), validate loan and due, create Stripe PaymentIntent.
-        Returns checkout details (amount, client_secret, payment_intent_id, due_date, customer_name, etc.).
-        No auth required.
+        Flexible checkout: pay any amount. Resolve customer, validate loan, create Stripe PaymentIntent.
+        charge_amount = min(payment_amount, remaining_balance). No auth required.
         """
         if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
             AppException().raise_400("Stripe is not configured")
+        if payment_amount <= 0:
+            AppException().raise_400("payment_amount must be greater than 0")
         customer = None
         if customer_id:
             customer = await self.db.get(Customer, customer_id)
@@ -292,35 +360,22 @@ class PaymentService:
             AppException().raise_404("Loan not found")
         if loan.customer_id != customer_id_resolved:
             AppException().raise_403("This loan does not belong to the given customer")
-        due_dt: datetime
-        amount: float
-        if payment_type == "next":
-            next_info = await self.get_next_unpaid_due(loan_id, customer_id_resolved)
-            if not next_info:
-                AppException().raise_400("No next payment due for this loan")
-            due_dt, amount = next_info
-        else:
-            if not due_date_iso or not due_date_iso.strip():
-                AppException().raise_400("due_date_iso is required when payment_type is 'due'")
-            try:
-                due_dt = _parse_due_date_iso(due_date_iso)
-            except ValueError as e:
-                AppException().raise_400(str(e))
-            validated = await self.validate_due_date_for_loan(loan_id, customer_id_resolved, due_dt)
-            if not validated:
-                AppException().raise_400("Invalid or already paid due date for this loan")
-            due_dt, amount = validated
-        amount_cents = int(round(amount * 100))
+        if getattr(loan, "status", "active") == "closed":
+            AppException().raise_400("Loan already completed")
+        remaining_balance = _round_amount(float(getattr(loan, "amount_financed", 0)))
+        if remaining_balance <= 0:
+            AppException().raise_400("Loan already completed")
+        charge_amount = _round_amount(min(payment_amount, remaining_balance))
+        amount_cents = int(round(charge_amount * 100))
         if amount_cents < 50:
             AppException().raise_400("Amount too small for Stripe (minimum $0.50)")
-        due_date_iso_str = due_dt.isoformat()
         try:
             result = create_payment_intent(
                 amount_cents=amount_cents,
                 currency=settings.STRIPE_CURRENCY,
                 loan_id=loan_id,
                 customer_id=customer_id_resolved,
-                due_date_iso=due_date_iso_str,
+                due_date_iso="flexible",
                 customer_email=customer.email,
             )
         except Exception as e:
@@ -328,13 +383,22 @@ class PaymentService:
         vehicle = await self.db.get(Vehicle, loan.vehicle_id)
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         customer_name = f"{customer.first_name} {customer.last_name}"
+        first_due = None
+        today = date.today()
+        loan_start = (loan.created_at + timedelta(days=14)).date()
+        loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+        to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+        due_dates = _get_due_dates_range(loan, loan_start, to_date)
+        if due_dates:
+            first_due = due_dates[0]
         return {
-            "amount": amount,
+            "amount": charge_amount,
+            "emi_amount": charge_amount,
             "amount_cents": amount_cents,
             "currency": settings.STRIPE_CURRENCY or "usd",
             "client_secret": result["client_secret"],
             "payment_intent_id": result["payment_intent_id"],
-            "due_date": due_dt,
+            "due_date": first_due or datetime.utcnow(),
             "customer_name": customer_name,
             "vehicle_display": vehicle_display,
             "loan_id": loan_id,
@@ -389,6 +453,7 @@ class PaymentService:
                 vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         return {
             "amount": amount,
+            "emi_amount": amount,
             "amount_cents": amount_cents,
             "currency": currency,
             "status": status,
@@ -405,7 +470,8 @@ class PaymentService:
     async def confirm_public_payment(self, payment_intent_id: str, card_token: str) -> dict:
         """
         Confirm a PaymentIntent (from checkout) with card_token, record payment, return transaction.
-        No auth required; intent metadata identifies loan/customer/due.
+        Handles flexible checkout (due_date_iso=flexible): applies to installments, updates loan.
+        No auth required.
         """
         if not settings.STRIPE_SECRET_KEY or not settings.STRIPE_SECRET_KEY.strip():
             AppException().raise_400("Stripe is not configured")
@@ -424,33 +490,89 @@ class PaymentService:
         meta = pi.get("metadata") or {}
         loan_id_str = meta.get("loan_id")
         customer_id_str = meta.get("customer_id")
-        due_date_iso = meta.get("due_date_iso")
-        if not loan_id_str or not customer_id_str or not due_date_iso:
-            AppException().raise_400("Invalid PaymentIntent: missing loan/customer/due metadata")
+        due_date_iso = meta.get("due_date_iso") or ""
+        if not loan_id_str or not customer_id_str:
+            AppException().raise_400("Invalid PaymentIntent: missing loan/customer metadata")
         loan_id = UUID(loan_id_str)
         customer_id = UUID(customer_id_str)
-        try:
-            due_dt = _parse_due_date_iso(due_date_iso)
-        except (ValueError, TypeError):
-            AppException().raise_400("Invalid due_date in PaymentIntent metadata")
-        amount_received = _ensure_non_negative_amount(
+        amount_received = _round_amount(
             (pi.get("amount_received") or pi.get("amount") or 0) / 100.0
         )
-        payment = await self._record_payment(
-            loan_id=loan_id,
-            customer_id=customer_id,
-            due_date=due_dt,
-            amount=amount_received,
-            status="completed",
-        )
-        if not payment:
-            existing = await self.db.execute(
-                select(Payment).where(
-                    Payment.loan_id == loan_id,
-                    func.date(Payment.due_date) == due_dt.date(),
-                )
+        loan = await self.db.get(Loan, loan_id)
+        if not loan:
+            AppException().raise_400("Loan not found")
+        if loan.customer_id != customer_id:
+            AppException().raise_403("Loan does not belong to this customer")
+        is_flexible = due_date_iso.strip().lower() == "flexible"
+        if is_flexible:
+            paid_per = await self._get_paid_amount_per_due_date(loan_id, completed_only=True)
+            today = date.today()
+            loan_start = (loan.created_at + timedelta(days=14)).date()
+            loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+            to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
+            amt_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            installments: list[tuple[datetime, float, float, float]] = []
+            for due_dt in due_dates:
+                d = due_dt.date()
+                paid = paid_per.get(d, 0)
+                remaining = _round_amount(max(0, amt_per - paid))
+                if remaining > 0:
+                    installments.append((due_dt, amt_per, paid, remaining))
+            remaining_to_apply = amount_received
+            applied_breakdown: list[dict] = []
+            first_due = None
+            for due_dt, _amt, _paid, rem in installments:
+                if remaining_to_apply <= 0:
+                    break
+                applied = _round_amount(min(remaining_to_apply, rem))
+                if applied > 0:
+                    applied_breakdown.append({
+                        "due_date": due_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "applied_amount": applied,
+                    })
+                    if first_due is None:
+                        first_due = due_dt
+                    remaining_to_apply -= applied
+            loan.amount_financed = _round_amount(max(0, float(loan.amount_financed) - amount_received))
+            loan.total_paid = _round_amount(float(getattr(loan, "total_paid", 0)) + amount_received)
+            if loan.amount_financed <= 0:
+                loan.amount_financed = 0
+                loan.status = "closed"
+            self.db.add(loan)
+            payment = await self._record_flexible_payment(
+                loan_id=loan_id,
+                customer_id=customer_id,
+                amount=amount_received,
+                applied_installments=applied_breakdown,
+                first_due=first_due or (due_dates[0] if due_dates else datetime.utcnow()),
+                status="completed",
+                payment_mode=PaymentMode.checkout.value,
             )
-            payment = existing.scalars().first()
+            await self.db.commit()
+            await self.db.refresh(payment)
+        else:
+            try:
+                due_dt = _parse_due_date_iso(due_date_iso)
+            except (ValueError, TypeError):
+                AppException().raise_400("Invalid due_date in PaymentIntent metadata")
+            emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount) if loan else amount_received
+            payment = await self._record_payment(
+                loan_id=loan_id,
+                customer_id=customer_id,
+                due_date=due_dt,
+                amount=amount_received,
+                emi_amount=emi_amt,
+                status="completed",
+            )
+            if not payment:
+                existing = await self.db.execute(
+                    select(Payment).where(
+                        Payment.loan_id == loan_id,
+                        func.date(Payment.due_date) == due_dt.date(),
+                    )
+                )
+                payment = existing.scalars().first()
         transaction = None
         if payment:
             loan = await self.db.get(Loan, payment.loan_id)
@@ -458,6 +580,7 @@ class PaymentService:
             vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+            emi_amt_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
             transaction = TransactionItem(
                 id=payment.id,
                 loan_id=payment.loan_id,
@@ -465,6 +588,7 @@ class PaymentService:
                 customer_name=customer_name,
                 vehicle_display=vehicle_display,
                 amount=_ensure_non_negative_amount(payment.amount),
+                emi_amount=_ensure_non_negative_amount(emi_amt_val),
                 payment_method=payment.payment_method,
                 status=payment.status,
                 payment_date=payment.payment_date,
@@ -493,6 +617,7 @@ class PaymentService:
         customer_id: UUID,
         due_date: datetime,
         amount: float,
+        emi_amount: float | None = None,
         status: str = "completed",
     ) -> Payment | None:
         """Create payment record. Idempotent: returns None if already exists for this loan + due date."""
@@ -508,14 +633,42 @@ class PaymentService:
             loan_id=loan_id,
             customer_id=customer_id,
             amount=amount,
+            emi_amount=emi_amount,
             payment_method="card",
             payment_date=datetime.utcnow(),
             due_date=due_date,
             status=status,
+            payment_mode=PaymentMode.installment.value,
         )
         self.db.add(payment)
         await self.db.commit()
         await self.db.refresh(payment)
+        return payment
+
+    async def _record_flexible_payment(
+        self,
+        loan_id: UUID,
+        customer_id: UUID,
+        amount: float,
+        applied_installments: list[dict],
+        first_due: datetime,
+        status: str = "completed",
+        payment_mode: str = PaymentMode.manual.value,
+    ) -> Payment | None:
+        """Create flexible payment record with applied_installments breakdown."""
+        payment = Payment(
+            loan_id=loan_id,
+            customer_id=customer_id,
+            amount=amount,
+            emi_amount=None,
+            payment_method="card",
+            payment_date=datetime.utcnow(),
+            due_date=first_due,
+            status=status,
+            payment_mode=payment_mode,
+            applied_installments=applied_installments if applied_installments else None,
+        )
+        self.db.add(payment)
         return payment
 
     async def _record_manual_payment(
@@ -525,6 +678,7 @@ class PaymentService:
         due_date: datetime,
         amount: float,
         payment_method: str,
+        emi_amount: float | None = None,
         note: str | None = None,
     ) -> Payment | None:
         """Create manual payment record. Returns None if duplicate (completed payment already exists for loan + due date)."""
@@ -541,10 +695,12 @@ class PaymentService:
             loan_id=loan_id,
             customer_id=customer_id,
             amount=amount,
+            emi_amount=emi_amount,
             payment_method=payment_method,
             payment_date=datetime.utcnow(),
             due_date=due_date,
             status=PaymentStatus.completed.value,
+            payment_mode=PaymentMode.installment.value,
             note=note,
         )
         self.db.add(payment)
@@ -593,12 +749,14 @@ class PaymentService:
         validated = await self.validate_due_date_for_loan(loan_id, customer_id, due_dt, only_completed=True)
         if not validated:
             return None  # Invalid or already paid/waived due date
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         payment = await self._record_manual_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=0.0,
             payment_method="waived",
+            emi_amount=emi_amt,
             note=note or "Installment waived by admin",
         )
         if not payment:
@@ -615,6 +773,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=0.0,
+            emi_amount=emi_amt,
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -638,12 +797,7 @@ class PaymentService:
         today = date.today()
         from_date = (loan.created_at + timedelta(days=14)).date()
         to_date = today
-        due_dates = _get_bi_weekly_due_dates_range(
-            loan.created_at,
-            loan.loan_term_months,
-            from_date,
-            to_date,
-        )
+        due_dates = _get_due_dates_range(loan, from_date, to_date)
         paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
         earliest_overdue_dt = None
         for due_dt in due_dates:
@@ -684,16 +838,25 @@ class PaymentService:
         if not validated:
             return None  # Invalid or already paid due date
         amount_safe = _ensure_non_negative_amount(amount)
+        emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         payment = await self._record_manual_payment(
             loan_id=loan_id,
             customer_id=customer_id,
             due_date=due_dt,
             amount=amount_safe,
             payment_method=payment_method,
+            emi_amount=emi_amt,
             note=note,
         )
         if not payment:
             return None
+        loan.amount_financed = _round_amount(max(0, float(loan.amount_financed) - amount_safe))
+        loan.total_paid = _round_amount(float(getattr(loan, "total_paid", 0)) + amount_safe)
+        if loan.amount_financed <= 0:
+            loan.amount_financed = 0
+            loan.status = "closed"
+        self.db.add(loan)
+        await self.db.commit()
         customer = await self.db.get(Customer, customer_id)
         vehicle = await self.db.get(Vehicle, loan.vehicle_id)
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
@@ -706,7 +869,6 @@ class PaymentService:
             title="Payment received",
             body=f"Your payment of ${_ensure_non_negative_amount(payment.amount):.2f} has been received.",
         )
-        await self._check_and_close_loan_if_paid(loan_id)
         return TransactionItem(
             id=payment.id,
             loan_id=payment.loan_id,
@@ -714,6 +876,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=_ensure_non_negative_amount(payment.amount),
+            emi_amount=emi_amt,
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -744,6 +907,9 @@ class PaymentService:
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for p, c, v, loan in result.all():
+            emi_val = getattr(p, "emi_amount", None)
+            if emi_val is None:
+                emi_val = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             items.append(
                 TransactionItem(
                     id=p.id,
@@ -752,6 +918,7 @@ class PaymentService:
                     customer_name=f"{c.first_name} {c.last_name}",
                     vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
                     amount=_ensure_non_negative_amount(p.amount),
+                    emi_amount=_ensure_non_negative_amount(emi_val),
                     payment_method=p.payment_method,
                     status=p.status,
                     payment_date=p.payment_date,
@@ -824,6 +991,9 @@ class PaymentService:
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for p, c, v, loan in result.all():
+            emi_val = getattr(p, "emi_amount", None)
+            if emi_val is None:
+                emi_val = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             items.append(
                 TransactionItem(
                     id=p.id,
@@ -832,6 +1002,7 @@ class PaymentService:
                     customer_name=f"{c.first_name} {c.last_name}",
                     vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
                     amount=_ensure_non_negative_amount(p.amount),
+                    emi_amount=_ensure_non_negative_amount(emi_val),
                     payment_method=p.payment_method,
                     status=p.status,
                     payment_date=p.payment_date,
@@ -841,6 +1012,82 @@ class PaymentService:
                 )
             )
         return items, total, total_amount, completed_count, failed_count
+
+    async def export_transactions_to_excel(
+        self,
+        customer_id: UUID | None = None,
+        loan_id: UUID | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> bytes:
+        """Export transactions to Excel (.xlsx). Same filters as list_transactions_admin (no pagination)."""
+        base = (
+            select(Payment, Customer, Vehicle, Loan)
+            .join(Loan, Payment.loan_id == Loan.id)
+            .join(Customer, Payment.customer_id == Customer.id)
+            .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .order_by(Payment.payment_date.desc())
+        )
+        if customer_id is not None:
+            base = base.where(Payment.customer_id == customer_id)
+        if loan_id is not None:
+            base = base.where(Payment.loan_id == loan_id)
+        if from_date is not None:
+            base = base.where(func.date(Payment.payment_date) >= from_date)
+        if to_date is not None:
+            base = base.where(func.date(Payment.payment_date) <= to_date)
+        result = await self.db.execute(base)
+        rows = result.all()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Transactions"
+
+        headers = [
+            "Payment ID",
+            "Loan ID",
+            "Customer ID",
+            "Customer Name",
+            "Vehicle",
+            "Amount",
+            "EMI Amount",
+            "Payment Method",
+            "Status",
+            "Payment Date",
+            "Due Date",
+            "Loan Status",
+            "Created At",
+        ]
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+
+        for row_idx, (p, c, v, loan) in enumerate(rows, start=2):
+            customer_name = f"{c.first_name} {c.last_name}"
+            vehicle_display = f"{v.year} {v.make} {v.model}" if v else ""
+            emi_val = getattr(p, "emi_amount", None) or _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            payment_date_str = p.payment_date.strftime("%Y-%m-%d %H:%M:%S") if hasattr(p.payment_date, "strftime") else str(p.payment_date)
+            due_date_str = p.due_date.strftime("%Y-%m-%d %H:%M:%S") if hasattr(p.due_date, "strftime") else str(p.due_date)
+            created_str = p.created_at.strftime("%Y-%m-%d %H:%M:%S") if p.created_at and hasattr(p.created_at, "strftime") else str(p.created_at or "")
+            ws.cell(row=row_idx, column=1, value=str(p.id))
+            ws.cell(row=row_idx, column=2, value=str(p.loan_id))
+            ws.cell(row=row_idx, column=3, value=str(p.customer_id))
+            ws.cell(row=row_idx, column=4, value=customer_name)
+            ws.cell(row=row_idx, column=5, value=vehicle_display)
+            ws.cell(row=row_idx, column=6, value=_ensure_non_negative_amount(p.amount))
+            ws.cell(row=row_idx, column=7, value=_ensure_non_negative_amount(emi_val))
+            ws.cell(row=row_idx, column=8, value=p.payment_method or "")
+            ws.cell(row=row_idx, column=9, value=p.status or "")
+            ws.cell(row=row_idx, column=10, value=payment_date_str)
+            ws.cell(row=row_idx, column=11, value=due_date_str)
+            ws.cell(row=row_idx, column=12, value=_loan_status_display(loan))
+            ws.cell(row=row_idx, column=13, value=created_str)
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer.getvalue()
 
     async def get_payment_summary_admin(
         self,
@@ -887,7 +1134,7 @@ class PaymentService:
             loan_status = _loan_status_display(loan)
             is_closed = getattr(loan, "status", "active") == "closed"
 
-            # Paid dues: completed payments for this loan
+            # Paid dues: from Payment records (including flexible with applied_installments)
             paid_result = await self.db.execute(
                 select(Payment)
                 .where(
@@ -896,49 +1143,77 @@ class PaymentService:
                 )
                 .order_by(Payment.due_date.asc())
             )
+            emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             for p in paid_result.scalars().all():
                 amt = _ensure_non_negative_amount(p.amount)
                 total_collected += amt
-                paid_dues.append(
-                    DueEntryItem(
-                        loan_id=loan.id,
-                        customer_id=loan.customer_id,
-                        customer_name=customer_name,
-                        vehicle_display=vehicle_display,
-                        due_date=p.due_date,
-                        amount=amt,
-                        payment_date=p.payment_date,
-                        payment_id=p.id,
-                        days_overdue=None,
-                        days_until_due=None,
-                        loan_status=loan_status,
+                emi_val = getattr(p, "emi_amount", None) or emi_amt
+                applied = getattr(p, "applied_installments", None) if isinstance(getattr(p, "applied_installments", None), list) else None
+                if applied:
+                    for entry in applied:
+                        if isinstance(entry, dict):
+                            due_str = entry.get("due_date")
+                            app_amt = float(entry.get("applied_amount") or 0)
+                            if due_str and app_amt > 0:
+                                try:
+                                    due_dt = datetime.fromisoformat(due_str.replace("Z", "+00:00"))
+                                    paid_dues.append(
+                                        DueEntryItem(
+                                            loan_id=loan.id,
+                                            customer_id=loan.customer_id,
+                                            customer_name=customer_name,
+                                            vehicle_display=vehicle_display,
+                                            due_date=due_dt,
+                                            amount=app_amt,
+                                            emi_amount=emi_amt,
+                                            payment_date=p.payment_date,
+                                            payment_id=p.id,
+                                            days_overdue=None,
+                                            days_until_due=None,
+                                            loan_status=loan_status,
+                                        )
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
+                else:
+                    paid_dues.append(
+                        DueEntryItem(
+                            loan_id=loan.id,
+                            customer_id=loan.customer_id,
+                            customer_name=customer_name,
+                            vehicle_display=vehicle_display,
+                            due_date=p.due_date,
+                            amount=amt,
+                            emi_amount=_ensure_non_negative_amount(emi_val),
+                            payment_date=p.payment_date,
+                            payment_id=p.id,
+                            days_overdue=None,
+                            days_until_due=None,
+                            loan_status=loan_status,
+                        )
                     )
-                )
 
-            # For closed loans, do not add unpaid or overdue (no more dues; avoids negative/extra amounts)
+            # For closed loans, do not add unpaid or overdue
             if is_closed:
                 continue
 
-            # Scheduled due dates for this loan (active loans only)
+            # Unpaid/overdue: use paid_amount per due_date (supports partial payments)
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            all_due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
-            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            all_due_dates = _get_due_dates_range(loan, loan_start, to_date)
+            paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
+            amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
 
             for due_dt in all_due_dates:
                 due_d = due_dt.date()
-                if due_d in paid_completed:
+                paid_amt = paid_per.get(due_d, 0)
+                remaining = _round_amount(max(0, amount_per - paid_amt))
+                if remaining <= 0:
                     continue
-                amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                 if due_d < today:
                     days_overdue = (today - due_d).days
-                    overdue_amount += amount
+                    overdue_amount += remaining
                     overdue_payments.append(
                         DueEntryItem(
                             loan_id=loan.id,
@@ -946,7 +1221,8 @@ class PaymentService:
                             customer_name=customer_name,
                             vehicle_display=vehicle_display,
                             due_date=due_dt,
-                            amount=amount,
+                            amount=remaining,
+                            emi_amount=amount_per,
                             payment_date=None,
                             payment_id=None,
                             days_overdue=days_overdue,
@@ -956,7 +1232,7 @@ class PaymentService:
                     )
                 else:
                     days_until_due = (due_d - today).days
-                    pending_amount += amount
+                    pending_amount += remaining
                     unpaid_dues.append(
                         DueEntryItem(
                             loan_id=loan.id,
@@ -964,7 +1240,8 @@ class PaymentService:
                             customer_name=customer_name,
                             vehicle_display=vehicle_display,
                             due_date=due_dt,
-                            amount=amount,
+                            amount=remaining,
+                            emi_amount=amount_per,
                             payment_date=None,
                             payment_id=None,
                             days_overdue=None,
@@ -1036,21 +1313,18 @@ class PaymentService:
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
-            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
+            paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
             unpaid_dates: list[datetime] = []
             total_unpaid = 0.0
             amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             for due_dt in due_dates:
-                if due_dt.date() in paid_completed:
+                paid_amt = paid_per.get(due_dt.date(), 0)
+                remaining = _round_amount(max(0, amount_per - paid_amt))
+                if remaining <= 0:
                     continue
                 unpaid_dates.append(due_dt)
-                total_unpaid += amount_per
+                total_unpaid += remaining
             if not unpaid_dates:
                 continue
             unpaid_dates.sort()
@@ -1066,6 +1340,7 @@ class PaymentService:
                     vehicle_display=vehicle_display,
                     unpaid_count=len(unpaid_dates),
                     total_unpaid_amount=total_unpaid,
+                    emi_amount=amount_per,
                     next_due_date=next_due,
                     next_due_date_iso=next_due.isoformat(),
                     loan_status=_loan_status_display(loan),
@@ -1117,20 +1392,17 @@ class PaymentService:
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_date = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                loan_start,
-                to_date,
-            )
-            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
-            amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
+            paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
+            amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             customer_name = f"{customer.first_name} {customer.last_name}"
             loan_status = _loan_status_display(loan)
             for due_dt in due_dates:
                 due_d = due_dt.date()
-                if due_d in paid_completed:
+                paid_amt = paid_per.get(due_d, 0)
+                remaining = _round_amount(max(0, amount_per - paid_amt))
+                if remaining <= 0:
                     continue
                 days_overdue = (today - due_d).days if due_d < today else None
                 days_until_due = (due_d - today).days if due_d >= today else None
@@ -1144,13 +1416,14 @@ class PaymentService:
                         vehicle_display=vehicle_display,
                         due_date=due_dt,
                         due_date_iso=due_dt.isoformat(),
-                        amount=amount,
+                        amount=remaining,
+                        emi_amount=amount_per,
                         days_overdue=days_overdue,
                         days_until_due=days_until_due,
                         loan_status=loan_status,
                     )
                 )
-                total_amount += amount
+                total_amount += remaining
         all_items.sort(key=lambda x: (x.due_date, x.loan_id))
         total = len(all_items)
         page = all_items[skip : skip + limit]
@@ -1175,20 +1448,20 @@ class PaymentService:
         all_items: list[OverdueItem] = []
         for loan, customer, vehicle in loans_result.all():
             # Due dates from loan start up to (and including) yesterday
-            from_date = (loan.created_at + timedelta(days=14)).date()
+            from_date = loan.created_at.date()
             to_date = today
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                from_date,
-                to_date,
-            )
-            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            due_dates = _get_due_dates_range(loan, from_date, to_date)
+            paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
+            amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
             for due_dt in due_dates:
                 due_d = due_dt.date()
-                if due_d >= today or due_d in paid_completed:
+                if due_d >= today:
+                    continue
+                paid_amt = paid_per.get(due_d, 0)
+                remaining = _round_amount(max(0, amount_per - paid_amt))
+                if remaining <= 0:
                     continue
                 days_overdue = (today - due_d).days
                 all_items.append(
@@ -1198,7 +1471,8 @@ class PaymentService:
                         customer_name=customer_name,
                         vehicle_display=vehicle_display,
                         due_date=due_dt,
-                        amount=_ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                        amount=remaining,
+                        emi_amount=amount_per,
                         days_overdue=days_overdue,
                         loan_status=_loan_status_display(loan),
                     )
@@ -1228,20 +1502,20 @@ class PaymentService:
         # Aggregate by customer_id: overdue_count, total_amount
         customer_overdue: dict[UUID, dict] = {}
         for loan, customer, vehicle in loans_result.all():
-            from_date = (loan.created_at + timedelta(days=14)).date()
+            from_date = loan.created_at.date()
             to_date = today
-            due_dates = _get_bi_weekly_due_dates_range(
-                loan.created_at,
-                loan.loan_term_months,
-                from_date,
-                to_date,
-            )
-            paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+            due_dates = _get_due_dates_range(loan, from_date, to_date)
+            paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
+            amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             for due_dt in due_dates:
                 due_d = due_dt.date()
-                if due_d >= today or due_d in paid_completed:
+                if due_d >= today:
                     continue
-                amount = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+                paid_amt = paid_per.get(due_d, 0)
+                remaining = _round_amount(max(0, amount_per - paid_amt))
+                if remaining <= 0:
+                    continue
+                amount = remaining
                 cid = loan.customer_id
                 if cid not in customer_overdue:
                     customer_overdue[cid] = {
@@ -1332,6 +1606,7 @@ class PaymentService:
         vehicle = await self.db.get(Vehicle, loan.vehicle_id) if loan else None
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
+        emi_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
         return TransactionItem(
             id=payment.id,
             loan_id=payment.loan_id,
@@ -1339,6 +1614,7 @@ class PaymentService:
             customer_name=customer_name,
             vehicle_display=vehicle_display,
             amount=_ensure_non_negative_amount(payment.amount),
+            emi_amount=_ensure_non_negative_amount(emi_val),
             payment_method=payment.payment_method,
             status=payment.status,
             payment_date=payment.payment_date,
@@ -1358,6 +1634,7 @@ class PaymentService:
         vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else ""
         receipt_number = "RCP-" + str(payment.id).replace("-", "").upper()[:12]
+        emi_val = getattr(payment, "emi_amount", None) or (loan and _ensure_non_negative_amount(loan.bi_weekly_payment_amount)) or _ensure_non_negative_amount(payment.amount)
         return {
             "receipt_number": receipt_number,
             "payment_id": payment.id,
@@ -1366,6 +1643,7 @@ class PaymentService:
             "customer_email": customer.email if customer else None,
             "customer_phone": customer.phone if customer else None,
             "amount": _ensure_non_negative_amount(payment.amount),
+            "emi_amount": _ensure_non_negative_amount(emi_val),
             "currency": (settings.STRIPE_CURRENCY or "usd").lower(),
             "payment_method": payment.payment_method or "card",
             "payment_date": payment.payment_date,

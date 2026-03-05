@@ -10,27 +10,11 @@ from app.api.v1.calendar.schemas import (
     PaymentCalendarResponse,
 )
 from app.core.utils import ensure_non_negative_amount
+from app.core.loan_schedule import get_due_dates_range
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment
 from app.models.vehicle import Vehicle
-
-
-def _get_bi_weekly_due_dates(loan_created_at: datetime, term_months: float, up_to_date: date) -> list[datetime]:
-    """Return list of bi-weekly due datetimes for a loan, up to and including up_to_date."""
-    first_due = loan_created_at + timedelta(days=14)
-    if first_due.date() > up_to_date:
-        return []
-    due_dates: list[datetime] = []
-    d = first_due
-    # term_months * 2 ≈ num bi-weekly payments; cap at ~2x for safety
-    max_payments = max(1, int(term_months * 2) + 12)
-    for _ in range(max_payments):
-        if d.date() > up_to_date:
-            break
-        due_dates.append(d)
-        d += timedelta(days=14)
-    return due_dates
 
 
 class CalendarService:
@@ -56,20 +40,23 @@ class CalendarService:
         )
         paid_result = await self.db.execute(paid_stmt)
         paid_rows = paid_result.all()
-        paid_items = [
-            PaidCalendarItem(
-                loan_id=p.loan_id,
-                customer_id=p.customer_id,
-                customer_name=f"{c.first_name} {c.last_name}",
-                due_date=p.due_date,
-                amount=ensure_non_negative_amount(p.amount),
-                vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
-                payment_id=p.id,
-                payment_date=p.payment_date,
-                payment_method=p.payment_method,
+        paid_items = []
+        for p, loan, c, v in paid_rows:
+            emi_val = getattr(p, "emi_amount", None) or ensure_non_negative_amount(loan.bi_weekly_payment_amount)
+            paid_items.append(
+                PaidCalendarItem(
+                    loan_id=p.loan_id,
+                    customer_id=p.customer_id,
+                    customer_name=f"{c.first_name} {c.last_name}",
+                    due_date=p.due_date,
+                    amount=ensure_non_negative_amount(p.amount),
+                    emi_amount=ensure_non_negative_amount(emi_val),
+                    vehicle_display=f"{v.year} {v.make} {v.model}" if v else None,
+                    payment_id=p.id,
+                    payment_date=p.payment_date,
+                    payment_method=p.payment_method,
+                )
             )
-            for p, loan, c, v in paid_rows
-        ]
 
         # --- Set of (loan_id, due_date as date) that have a payment ---
         all_paid_stmt = select(Payment.loan_id, func.date(Payment.due_date).label("d")).where(
@@ -93,9 +80,12 @@ class CalendarService:
         for loan, customer, vehicle in loans_rows:
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
-            due_dates = _get_bi_weekly_due_dates(
+            payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            due_dates = get_due_dates_range(
                 loan.created_at,
                 loan.loan_term_months,
+                payment_type,
+                loan.created_at.date(),
                 target_date,
             )
             for due_dt in due_dates:
@@ -103,12 +93,14 @@ class CalendarService:
                 key = (loan.id, due_d)
                 if key in paid_pairs:
                     continue
+                amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                 item = CalendarPaymentItem(
                     loan_id=loan.id,
                     customer_id=loan.customer_id,
                     customer_name=customer_name,
                     due_date=due_dt,
-                    amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                    amount=amt,
+                    emi_amount=amt,
                     vehicle_display=vehicle_display,
                 )
                 if due_d == target_date:

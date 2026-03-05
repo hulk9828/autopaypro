@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     FIREBASE_CREDENTIALS_PATH: str = Field(default="", description="Path to Firebase service account JSON file")
     FIREBASE_CREDENTIALS_JSON: str = Field(default="", description="Alternatively: raw JSON string of service account (e.g. from env)")
 
+    # Admin forgot password: base URL for reset link in email (e.g. https://admin.example.com). Optional.
+    ADMIN_PASSWORD_RESET_BASE_URL: str = Field(default="", description="Base URL for admin password reset link")
+
     class Config:
         extra = "ignore"
         env_file = str(ENV_PATH)

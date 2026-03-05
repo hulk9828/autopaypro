@@ -9,26 +9,18 @@ from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.payments.service import PaymentService
 from app.core.config import settings
 from app.core.database import get_async_session_maker_instance
-from app.core.loan_schedule import get_bi_weekly_due_dates_range
+from app.core.loan_schedule import get_due_dates_range
 from app.core.utils import ensure_non_negative_amount
 from app.core.notification_service import (
     scope_key_for_loan_due,
     send_payment_notification,
 )
 from app.models.loan import Loan
-from app.models.payment import Payment
 
 logger = logging.getLogger(__name__)
-
-
-async def _get_paid_due_dates_for_loan(session: AsyncSession, loan_id: UUID) -> set[date]:
-    """Set of due dates (as date) already paid for this loan."""
-    result = await session.execute(
-        select(func.date(Payment.due_date).label("d")).where(Payment.loan_id == loan_id)
-    )
-    return {r.d for r in result.all()}
 
 
 async def check_and_send_payment_notifications() -> None:
@@ -55,13 +47,16 @@ async def check_and_send_payment_notifications() -> None:
 
             for loan in loans:
                 try:
-                    paid = await _get_paid_due_dates_for_loan(session, loan.id)
+                    payment_service = PaymentService(session)
+                    paid = await payment_service.get_paid_due_dates_for_loan(loan.id)
                     customer_id = loan.customer_id
 
                     # Due tomorrow
-                    due_tomorrow_dates = get_bi_weekly_due_dates_range(
+                    payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+                    due_tomorrow_dates = get_due_dates_range(
                         loan.created_at,
                         loan.loan_term_months,
+                        payment_type,
                         tomorrow,
                         tomorrow,
                     )
@@ -81,9 +76,10 @@ async def check_and_send_payment_notifications() -> None:
                             sent_due_tomorrow += 1
 
                     # Overdue (past due, within last OVERDUE_DAYS_FOR_NOTIFICATION days)
-                    overdue_dates = get_bi_weekly_due_dates_range(
+                    overdue_dates = get_due_dates_range(
                         loan.created_at,
                         loan.loan_term_months,
+                        payment_type,
                         overdue_from,
                         today - timedelta(days=1),
                     )

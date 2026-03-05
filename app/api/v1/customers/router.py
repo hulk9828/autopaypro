@@ -1,13 +1,14 @@
 from typing import List, Optional
 from uuid import UUID
+from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status, Query
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
 
 from app.api.v1.customers.schemas import (
-    CreateCustomerRequest, 
-    CustomerResponse, 
+    CreateCustomerRequest,
+    CustomerResponse,
     CustomerLogin,
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -17,7 +18,8 @@ from app.api.v1.customers.schemas import (
     CustomerListResponse,
     CustomerProfileResponse,
     CustomerProfileUpdate,
-    VerifyOtpRequest
+    VerifyOtpRequest,
+    CustomerPaymentScheduleResponse,
 )
 from app.api.v1.customers.service import CustomerService
 from app.core.deps import get_db, get_current_customer, get_current_active_admin_user
@@ -84,6 +86,27 @@ async def get_customer_home_page(
 
 
 @router.get(
+    "/payment-schedule",
+    response_model=CustomerPaymentScheduleResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Customer payment schedule",
+    description="Get when to pay and how much: for each loan, list of due dates with amount and status (paid/upcoming/overdue). Optional from_date and to_date to filter the date range.",
+    tags=["customer"]
+)
+async def get_customer_payment_schedule(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+    from_date: Optional[date] = Query(None, description="Start date for schedule (default: loan start)"),
+    to_date: Optional[date] = Query(None, description="End date for schedule (default: loan end)"),
+):
+    """Customer sees all due dates and amounts for their loans. Each entry has due_date, amount, and status (paid/upcoming/overdue)."""
+    customer_service = CustomerService(db)
+    return await customer_service.get_customer_payment_schedule(
+        current_customer, from_date=from_date, to_date=to_date
+    )
+
+
+@router.get(
     "/profile",
     response_model=CustomerProfileResponse,
     status_code=status.HTTP_200_OK,
@@ -103,45 +126,55 @@ async def get_customer_profile(
     return CustomerProfileResponse.model_validate(customer)
 
 
+async def _parse_profile_update(request: Request) -> tuple[CustomerProfileUpdate, Optional[UploadFile]]:
+    """Parse profile update from either JSON or multipart/form-data."""
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json() or {}
+        if not isinstance(body, dict):
+            body = {}
+        data = CustomerProfileUpdate(
+            **{k: body[k] for k in CustomerProfileUpdate.model_fields if k in body}
+        )
+        return data, None
+    form = await request.form()
+    data = CustomerProfileUpdate(
+        first_name=form.get("first_name") or None,
+        last_name=form.get("last_name") or None,
+        phone=form.get("phone") or None,
+        email=form.get("email") or None,
+        address=form.get("address") or None,
+        driver_license_number=form.get("driver_license_number") or None,
+        employer_name=form.get("employer_name") or None,
+        device_token=form.get("device_token") or None,
+        profile_pic=None,
+    )
+    pic = form.get("profile_pic")
+    profile_pic_file = pic if isinstance(pic, UploadFile) and pic.filename else None
+    return data, profile_pic_file
+
+
 @router.patch(
     "/profile",
     response_model=CustomerProfileResponse,
     status_code=status.HTTP_200_OK,
     summary="Update customer profile",
-    description="Update current customer profile via multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (uploaded to S3, URL saved on customer).",
+    description="Update current customer profile. Accepts application/json (e.g. {\"first_name\": \"John\"}) or multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (multipart only, uploaded to S3).",
     tags=["customer"],
 )
 async def update_customer_profile(
+    request: Request,
     current_customer: Customer = Depends(get_current_customer),
     db: AsyncSession = Depends(get_db),
-    first_name: Optional[str] = Form(None),
-    last_name: Optional[str] = Form(None),
-    phone: Optional[str] = Form(None),
-    email: Optional[str] = Form(None),
-    address: Optional[str] = Form(None),
-    driver_license_number: Optional[str] = Form(None),
-    employer_name: Optional[str] = Form(None),
-    device_token: Optional[str] = Form(None),
-    profile_pic: Optional[UploadFile] = File(None, description="Profile image (JPEG, PNG, WebP, GIF). Uploaded to S3; URL saved on customer."),
 ):
-    """Update the current customer's profile. Send as multipart/form-data. Optional text fields + optional profile image file."""
+    """Update the current customer's profile. Supports JSON or multipart/form-data."""
+    data, profile_pic = await _parse_profile_update(request)
     customer_service = CustomerService(db)
     customer = await customer_service.get_customer_profile(current_customer.id)
     if not customer:
         AppException().raise_404("Customer not found")
-    data = CustomerProfileUpdate(
-        first_name=first_name,
-        last_name=last_name,
-        phone=phone,
-        email=email,
-        address=address,
-        driver_license_number=driver_license_number,
-        employer_name=employer_name,
-        device_token=device_token,
-        profile_pic=None,
-    )
     updated = await customer_service.update_customer_profile(customer, data)
-    if profile_pic and profile_pic.filename:
+    if profile_pic:
         if not profile_pic.content_type or not profile_pic.content_type.startswith("image/"):
             AppException().raise_400("Profile image must be an image (JPEG, PNG, WebP, or GIF)")
         content = await profile_pic.read()
@@ -203,42 +236,24 @@ async def get_customer_by_id(
     response_model=CustomerProfileResponse,
     status_code=status.HTTP_200_OK,
     summary="Update customer profile (admin)",
-    description="Update a customer's profile via multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (uploaded to S3, URL saved on customer).",
+    description="Update a customer's profile. Accepts application/json or multipart/form-data. Optional: first_name, last_name, phone, email, address, driver_license_number, employer_name, device_token; optional profile_pic = image file (multipart only).",
     tags=["admin-customers"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
 async def admin_update_customer_profile(
     customer_id: UUID,
+    request: Request,
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
-    first_name: Optional[str] = Form(None),
-    last_name: Optional[str] = Form(None),
-    phone: Optional[str] = Form(None),
-    email: Optional[str] = Form(None),
-    address: Optional[str] = Form(None),
-    driver_license_number: Optional[str] = Form(None),
-    employer_name: Optional[str] = Form(None),
-    device_token: Optional[str] = Form(None),
-    profile_pic: Optional[UploadFile] = File(None, description="Profile image (JPEG, PNG, WebP, GIF). Uploaded to S3; URL saved on customer."),
 ):
-    """Admin: update a customer's profile by customer_id. Send as multipart/form-data. Optional text fields + optional profile image file."""
+    """Admin: update a customer's profile by customer_id. Supports JSON or multipart/form-data."""
+    data, profile_pic = await _parse_profile_update(request)
     customer_service = CustomerService(db)
     customer = await customer_service.get_customer_profile(customer_id)
     if not customer:
         AppException().raise_404("Customer not found")
-    data = CustomerProfileUpdate(
-        first_name=first_name,
-        last_name=last_name,
-        phone=phone,
-        email=email,
-        address=address,
-        driver_license_number=driver_license_number,
-        employer_name=employer_name,
-        device_token=device_token,
-        profile_pic=None,
-    )
     updated = await customer_service.update_customer_profile(customer, data)
-    if profile_pic and profile_pic.filename:
+    if profile_pic:
         if not profile_pic.content_type or not profile_pic.content_type.startswith("image/"):
             AppException().raise_400("Profile image must be an image (JPEG, PNG, WebP, or GIF)")
         content = await profile_pic.read()
@@ -252,8 +267,8 @@ async def admin_update_customer_profile(
     "/",
     response_model=CustomerResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new customer and associated loans/vehicles",
-    description="Admin-only endpoint to create a new customer. Requires admin authentication.",
+    summary="Create a new customer and assign vehicles on lease",
+    description="Admin-only. Create a customer and assign vehicles on lease (fixed term). Each vehicle gets a loan; credentials are emailed.",
     tags=["admin-customers"],
     dependencies=[Depends(get_current_active_admin_user)]
 )
@@ -262,7 +277,7 @@ async def create_customer(
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new customer. Only admins can create customers."""
+    """Create a new customer and assign vehicles on lease. Only admins."""
     customer_service = CustomerService(db)
     new_customer = await customer_service.create_customer_and_loan(customer_data)
     return CustomerResponse.model_validate(new_customer)

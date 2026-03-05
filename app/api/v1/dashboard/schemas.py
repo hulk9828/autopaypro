@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DashboardSummaryStats(BaseModel):
@@ -25,6 +25,7 @@ class RecentPayment(BaseModel):
     customer_name: str
     payment_date: datetime
     amount: float
+    emi_amount: float = Field(..., description="EMI amount customer had to pay for this due date")
     payment_method: str
     status: Optional[str] = None  # completed | failed
     vehicle_display: Optional[str] = None  # e.g. "2024 Honda Civic"
@@ -45,6 +46,7 @@ class OverdueAccount(BaseModel):
     loan_id: UUID
     due_date: datetime
     overdue_amount: float
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     days_overdue: int
 
     class Config:
@@ -58,6 +60,7 @@ class UpcomingPayment(BaseModel):
     loan_id: UUID
     due_date: datetime
     payment_amount: float
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     days_until_due: int
 
     class Config:

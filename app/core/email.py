@@ -3,6 +3,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 
+import aiosmtplib
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -188,6 +190,33 @@ AutoLoanPro Team
         subject=subject,
         body=html_body,
         is_html=True
+    )
+
+
+async def send_admin_password_reset_otp_email(admin_email: str, otp_code: str) -> bool:
+    """
+    Send OTP email to admin for password reset.
+    OTP expires in 10 minutes.
+    """
+    subject = "AutoLoanPro Admin - Password Reset OTP"
+    html_body = f"""
+<html>
+  <body>
+    <h2>Password Reset OTP</h2>
+    <p>You have requested to reset your admin password. Use the OTP below to verify and reset:</p>
+    <div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0;">
+      <h1 style="color: #333; font-size: 32px; letter-spacing: 8px; margin: 0;">{otp_code}</h1>
+    </div>
+    <p><em>This OTP will expire in 10 minutes. If you did not request this, please ignore this email.</em></p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
+    return await send_email(
+        to_email=admin_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
     )
 
 

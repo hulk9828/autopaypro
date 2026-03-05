@@ -18,20 +18,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "payment_notification_logs",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("notification_type", sa.String(50), nullable=False),
-        sa.Column("scope_key", sa.String(255), nullable=False),
-        sa.Column("customer_id", sa.UUID(), nullable=False),
-        sa.Column("sent_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(["customer_id"], ["customers.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("notification_type", "scope_key", name="uq_notification_type_scope_key"),
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS payment_notification_logs (
+            id UUID NOT NULL,
+            notification_type VARCHAR(50) NOT NULL,
+            scope_key VARCHAR(255) NOT NULL,
+            customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            sent_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+            PRIMARY KEY (id),
+            CONSTRAINT uq_notification_type_scope_key UNIQUE (notification_type, scope_key)
+        )
+    """)
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_payment_notification_logs_scope_key ON payment_notification_logs (scope_key)"
     )
-    op.create_index("ix_payment_notification_logs_scope_key", "payment_notification_logs", ["scope_key"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_payment_notification_logs_scope_key", table_name="payment_notification_logs")
-    op.drop_table("payment_notification_logs")
+    op.execute("DROP INDEX IF EXISTS ix_payment_notification_logs_scope_key")
+    op.execute("DROP TABLE IF EXISTS payment_notification_logs")

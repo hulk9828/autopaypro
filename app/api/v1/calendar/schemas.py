@@ -14,6 +14,7 @@ class CalendarPaymentItem(BaseModel):
     customer_name: str
     due_date: datetime
     amount: float
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
     vehicle_display: Optional[str] = None  # e.g. "2020 Honda Civic"
 
 

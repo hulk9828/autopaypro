@@ -156,7 +156,7 @@ class DashboardService:
     async def get_recent_payments(self, limit: int = 10) -> List[RecentPayment]:
         """Get recent payments (admin dashboard)."""
         result = await self.db.execute(
-            select(Payment, Customer, Vehicle)
+            select(Payment, Customer, Vehicle, Loan)
             .join(Customer, Payment.customer_id == Customer.id)
             .join(Loan, Payment.loan_id == Loan.id)
             .join(Vehicle, Loan.vehicle_id == Vehicle.id)
@@ -164,9 +164,10 @@ class DashboardService:
             .limit(limit)
         )
         recent_payments = []
-        for payment, customer, vehicle in result.all():
+        for payment, customer, vehicle, loan in result.all():
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            emi_val = getattr(payment, "emi_amount", None) or ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             recent_payments.append(
                 RecentPayment(
                     payment_id=payment.id,
@@ -174,6 +175,7 @@ class DashboardService:
                     customer_name=customer_name,
                     payment_date=payment.payment_date,
                     amount=ensure_non_negative_amount(payment.amount),
+                    emi_amount=ensure_non_negative_amount(emi_val),
                     payment_method=payment.payment_method,
                     status=payment.status,
                     vehicle_display=vehicle_display,
@@ -215,13 +217,15 @@ class DashboardService:
                     days_overdue = (today - next_due_date).days
                     customer_name = f"{customer.first_name} {customer.last_name}"
                     
+                    emi_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                     overdue_accounts.append(
                         OverdueAccount(
                             customer_id=customer.id,
                             customer_name=customer_name,
                             loan_id=loan.id,
                             due_date=next_due_date,
-                            overdue_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                            overdue_amount=emi_amt,
+                            emi_amount=emi_amt,
                             days_overdue=days_overdue
                         )
                     )
@@ -267,13 +271,15 @@ class DashboardService:
                         continue
                     customer_name = f"{customer.first_name} {customer.last_name}"
                     
+                    emi_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
                     upcoming_payments.append(
                         UpcomingPayment(
                             customer_id=customer.id,
                             customer_name=customer_name,
                             loan_id=loan.id,
                             due_date=next_due_date,
-                            payment_amount=ensure_non_negative_amount(loan.bi_weekly_payment_amount),
+                            payment_amount=emi_amt,
+                            emi_amount=emi_amt,
                             days_until_due=days_until_due
                         )
                     )

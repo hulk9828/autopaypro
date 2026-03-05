@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BasicInfo(BaseModel):
@@ -20,12 +20,49 @@ class AddressDocs(BaseModel):
     employer_name: Optional[str] = None
 
 
-class VehiclePurchase(BaseModel):
+class VehicleLease(BaseModel):
+    """Vehicle to assign to customer on lease (fixed term).
+    lease_price = total agreed price; lease_amount = amount paid over the loan term (installments).
+    down_payment is computed as lease_price - lease_amount if not provided.
+    """
     vehicle_id: UUID
-    purchase_price: float
-    down_payment: float
-    interest_rate: float
-    loan_term_months: int
+    lease_price: float = Field(..., gt=0, description="Lease price for this vehicle (total agreed price)")
+    lease_amount: float = Field(
+        ...,
+        ge=0,
+        description="Amount to be paid over the loan term (total of all installments); must be <= lease_price",
+    )
+    down_payment: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Down payment / security deposit. If omitted, computed as lease_price - lease_amount.",
+    )
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = Field(
+        default="bi_weekly",
+        description="Payment frequency: bi_weekly, monthly, or semi_monthly",
+    )
+    loan_term_months: int = Field(..., ge=0, description="Lease term in months (0 if full down payment, no schedule)")
+    lease_period_months: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Lease period in months for this vehicle. If not set, loan_term_months is used.",
+    )
+
+    @model_validator(mode="after")
+    def lease_amount_and_down_payment_consistent(self):
+        if self.lease_amount > self.lease_price:
+            raise ValueError("lease_amount (amount paid over term) must be less than or equal to lease_price")
+        if self.down_payment is None:
+            self.down_payment = round(self.lease_price - self.lease_amount, 2)
+        else:
+            expected = round(self.lease_price - self.lease_amount, 2)
+            if abs(self.down_payment - expected) > 0.01:
+                raise ValueError(
+                    f"down_payment must equal lease_price - lease_amount (expected {expected})"
+                )
+        if self.down_payment < 0:
+            raise ValueError("down_payment cannot be negative (lease_amount must be <= lease_price)")
+        return self
 
 
 class PaymentInfo(BaseModel):
@@ -35,7 +72,7 @@ class PaymentInfo(BaseModel):
 class CreateCustomerRequest(BaseModel):
     basic_info: BasicInfo
     address_docs: AddressDocs
-    vehicles_to_purchase: List[VehiclePurchase]
+    vehicles_to_lease: List[VehicleLease] = Field(..., description="Vehicles to assign to customer on lease")
 
 
 class CustomerResponse(BaseModel):
@@ -112,6 +149,15 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8, description="New password (minimum 8 characters)")
 
 
+def _payment_schedule_description(lease_payment_type: str) -> str:
+    """Human-readable payment frequency for lease_payment_type."""
+    if lease_payment_type == "monthly":
+        return "Monthly (same day each month)"
+    if lease_payment_type == "semi_monthly":
+        return "Twice per month (1st and 15th)"
+    return "Every 2 weeks (bi-weekly)"
+
+
 class VehicleLoanInfo(BaseModel):
     """Vehicle and loan information for customer home page."""
     vehicle_id: UUID
@@ -126,11 +172,18 @@ class VehicleLoanInfo(BaseModel):
     down_payment: float
     amount_financed: float
     bi_weekly_payment_amount: float
-    remaining_balance: float
+    payment_amount: float = Field(..., description="Amount due per payment (same as bi_weekly_payment_amount; varies by lease_payment_type frequency)")
+    payment_schedule_description: str = Field(..., description="Human-readable payment frequency, e.g. 'Every 2 weeks (bi-weekly)', 'Monthly', 'Twice per month (1st and 15th)'")
+    remaining_balance: float = Field(..., description="Amount left to pay (loan.amount_financed)")
+    total_paid: float = Field(0, description="Total amount paid so far (loan.total_paid)")
     loan_term_months: float
-    interest_rate: float
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     loan_start_date: datetime
     loan_end_date: datetime
+    lease_start_date: datetime = Field(..., description="When the lease for this vehicle started")
+    lease_end_date: datetime = Field(..., description="When the lease for this vehicle ends")
+    lease_term_months: float = Field(..., description="Lease duration in months")
+    lease_time_display: str = Field(..., description="Human-readable lease duration, e.g. '24 months' or '2 years'")
     next_payment_due_date: datetime
     payments_remaining: int
     loan_status: Literal["open", "closed"] = Field(
@@ -165,8 +218,10 @@ class LoanDetail(BaseModel):
     down_payment: float
     amount_financed: float
     bi_weekly_payment_amount: float
+    payment_amount: float = Field(..., description="Amount due per payment")
+    payment_schedule_description: str = Field(..., description="Human-readable payment frequency")
     loan_term_months: float
-    interest_rate: float
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     created_at: datetime
     next_payment_due_date: Optional[datetime] = None
     loan_status: Literal["open", "closed"] = Field(
@@ -176,6 +231,36 @@ class LoanDetail(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Payment schedule API (customer sees when to pay how much)
+class PaymentScheduleEntry(BaseModel):
+    """Single due date entry: when to pay and how much."""
+    due_date: datetime = Field(..., description="Date and time when this payment is due")
+    amount: float = Field(..., description="Amount due on this date")
+    emi_amount: float = Field(..., description="EMI amount customer has to pay for this due date")
+    paid_amount: float = Field(0, description="Amount already paid toward this due date")
+    status: Literal["paid", "partially_paid", "upcoming", "overdue"] = Field(
+        ...,
+        description="paid = fully paid; partially_paid = some paid; overdue = past due unpaid; upcoming = future",
+    )
+
+
+class LoanPaymentSchedule(BaseModel):
+    """Payment schedule for one loan: vehicle info, payment frequency, and list of due dates with amounts."""
+    loan_id: UUID
+    vehicle_display: str = Field(..., description="e.g. '2024 Honda Civic'")
+    lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"]
+    payment_schedule_description: str
+    payment_amount: float = Field(..., description="Amount due per payment date")
+    entries: List[PaymentScheduleEntry] = Field(..., description="Due dates with amount and status (paid/upcoming/overdue)")
+
+
+class CustomerPaymentScheduleResponse(BaseModel):
+    """Full payment schedule for the customer: all loans with due dates and amounts."""
+    customer_id: UUID
+    customer_name: str
+    loans: List[LoanPaymentSchedule]
 
 
 class CustomerDetailResponse(BaseModel):
