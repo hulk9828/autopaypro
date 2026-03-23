@@ -1,6 +1,6 @@
 from typing import List, Optional
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,8 +11,13 @@ from app.api.v1.dashboard.schemas import (
     RecentPayment,
     OverdueAccount,
     UpcomingPayment,
-    DashboardResponse
+    DashboardResponse,
+    PendingEMI,
+    CustomerPendingLoan,
+    CustomersWithPendingLoanResponse,
 )
+from app.api.v1.payments.service import PaymentService
+from app.core.loan_schedule import get_due_dates_range
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment
@@ -325,3 +330,58 @@ class DashboardService:
         """Count the number of overdue accounts."""
         overdue_accounts = await self.get_overdue_accounts()
         return len(overdue_accounts)
+
+    async def get_customers_with_pending_loan(self) -> CustomersWithPendingLoanResponse:
+        """
+        Get all customers who have a pending loan amount (amount_financed - total_paid > 0),
+        with customer details, loan_id, and list of pending EMIs (due date + amount) they have to pay.
+        """
+        today = datetime.utcnow()
+        loans_result = await self.db.execute(
+            select(Loan, Customer)
+            .join(Customer, Loan.customer_id == Customer.id)
+            .where(
+                and_(
+                    Loan.status == "active",
+                    (Loan.amount_financed - Loan.total_paid) > 0,
+                    Customer.account_status == AccountStatus.active.value,
+                )
+            )
+        )
+        payment_service = PaymentService(self.db)
+        emi_amt_field = "bi_weekly_payment_amount"
+        customers_list: List[CustomerPendingLoan] = []
+
+        for loan, customer in loans_result.all():
+            pending_amount = ensure_non_negative_amount(
+                float(loan.amount_financed) - float(loan.total_paid or 0)
+            )
+            loan_start = loan.created_at
+            loan_end = loan_start + timedelta(days=int(loan.loan_term_months * 30.44))
+            from_date = loan_start.date() if hasattr(loan_start, "date") else date(loan_start.year, loan_start.month, loan_start.day)
+            to_date = loan_end.date() if hasattr(loan_end, "date") else date(loan_end.year, loan_end.month, loan_end.day)
+            payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            all_due_dates = get_due_dates_range(
+                loan_start, loan.loan_term_months, payment_type, from_date, to_date
+            )
+            paid_due_dates = await payment_service.get_paid_due_dates_for_loan(loan.id)
+            emi_amount = ensure_non_negative_amount(getattr(loan, emi_amt_field, 0))
+            pending_emis = [
+                PendingEMI(due_date=d, amount=emi_amount)
+                for d in all_due_dates
+                if (d.date() if hasattr(d, "date") else d) not in paid_due_dates
+            ]
+            customers_list.append(
+                CustomerPendingLoan(
+                    customer_id=customer.id,
+                    first_name=customer.first_name,
+                    last_name=customer.last_name,
+                    email=customer.email,
+                    phone=customer.phone,
+                    loan_id=loan.id,
+                    pending_loan_amount=round(pending_amount, 2),
+                    pending_emis=pending_emis,
+                )
+            )
+
+        return CustomersWithPendingLoanResponse(customers=customers_list)

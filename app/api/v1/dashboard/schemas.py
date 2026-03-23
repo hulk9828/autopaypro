@@ -73,3 +73,41 @@ class DashboardResponse(BaseModel):
     recent_payments: List[RecentPayment]
     overdue_accounts: List[OverdueAccount]
     upcoming_payments: List[UpcomingPayment]
+
+
+# --- Customers with pending loan amount ---
+
+
+class PendingEMI(BaseModel):
+    """A single pending EMI (due date and amount the user has to pay)."""
+    due_date: datetime
+    amount: float = Field(..., description="EMI amount due for this date")
+
+    class Config:
+        from_attributes = True
+
+
+class CustomerPendingLoan(BaseModel):
+    """Customer who has pending loan amount: customer details, loan id, and pending EMIs."""
+    customer_id: UUID
+    first_name: str
+    last_name: str
+    email: str
+    phone: str
+    loan_id: UUID
+    pending_loan_amount: float = Field(
+        ...,
+        description="Remaining balance (amount_financed - total_paid) the customer has to pay",
+    )
+    pending_emis: List[PendingEMI] = Field(
+        default_factory=list,
+        description="List of pending EMIs (due date and amount) the user has to pay",
+    )
+
+    class Config:
+        from_attributes = True
+
+
+class CustomersWithPendingLoanResponse(BaseModel):
+    """Response for the customers-with-pending-loan endpoint."""
+    customers: List[CustomerPendingLoan]

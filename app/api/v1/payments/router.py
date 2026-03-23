@@ -3,8 +3,8 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import Response
+from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -12,21 +12,23 @@ logger = logging.getLogger(__name__)
 from app.api.v1.payments.schemas import (
     AdminTransactionHistoryResponse,
     BulkOverdueReminderResponse,
-    CheckoutRequest,
-    CheckoutResponse,
+    CompleteCheckoutRequest,
+    CompleteCheckoutResponse,
+    CreateCheckoutRequest,
+    CreateCheckoutResponse,
     DueCustomersResponse,
     DueInstallmentsResponse,
     GetCheckoutResponse,
-    MakePaymentRequest,
-    MakePaymentResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
     PaymentReceiptResponse,
     PaymentSummaryResponse,
-    PublicPaymentRequest,
     RecordManualPaymentRequest,
     TransactionHistoryResponse,
     TransactionItem,
+    UpdatePaymentErrorResponse,
+    UpdatePaymentRequest,
+    UpdatePaymentResponse,
     UpdatePaymentStatusRequest,
     WaiveOverdueRequest,
     WaiveOverdueByCustomerRequest,
@@ -40,105 +42,119 @@ from app.models.user import User
 router = APIRouter()
 
 
-# --- Checkout: create (admin only) and get (public) ---
+# --- Checkout: create (admin), fetch by token, complete (no auth for fetch/complete) ---
 @router.post(
     "/checkout",
-    response_model=CheckoutResponse,
+    response_model=CreateCheckoutResponse,
     status_code=status.HTTP_200_OK,
     summary="Create checkout (admin)",
-    description="Create checkout: pay any amount. Returns Stripe client_secret and payment_intent_id. Identify customer by email or customer_id.",
+    description="Create a checkout and send a payment link to the customer's email. Customer can open the link and pay on the frontend, then complete via POST /checkout/{token}/complete.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
 async def create_checkout(
-    data: CheckoutRequest,
+    data: CreateCheckoutRequest,
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create checkout (admin only): returns payment details and Stripe PaymentIntent client_secret for flexible amount."""
+    """Admin creates checkout; payment link is emailed to the customer."""
     service = PaymentService(db)
-    result = await service.get_checkout(
-        loan_id=data.loan_id,
-        payment_amount=data.payment_amount,
-        email=data.email,
+    result = await service.create_checkout_admin(
         customer_id=data.customer_id,
+        loan_id=data.loan_id,
+        amount=data.amount,
     )
-    return CheckoutResponse(**result)
+    return CreateCheckoutResponse(**result)
 
 
 @router.get(
-    "/checkout/{payment_intent_id}",
+    "/checkout/{token}",
     response_model=GetCheckoutResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get checkout (no auth)",
-    description="Get checkout details by Stripe PaymentIntent ID (e.g. to poll status or re-display). Returns amount, status, client_secret, and metadata. No auth token required.",
+    summary="Get checkout by token (no auth)",
+    description="Fetch checkout details by token (from the payment link). Use this when the user opens the payment link to display amount, vehicle, and customer info. Returns 404 if token invalid or expired.",
     tags=["payments"],
 )
 async def get_checkout(
-    payment_intent_id: str,
+    token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get checkout by payment_intent_id (from create checkout response). Use to check status (e.g. succeeded) or re-use client_secret."""
+    """Get checkout details for the payment page. No auth required."""
     service = PaymentService(db)
-    result = await service.get_checkout_by_payment_intent_id(payment_intent_id)
+    result = await service.get_checkout_by_token(token)
+    if result is None:
+        AppException().raise_404("Checkout not found or link has expired")
     return GetCheckoutResponse(**result)
 
 
-# --- Public payment (no auth): confirm PaymentIntent with card token ---
 @router.post(
-    "/pay",
-    response_model=MakePaymentResponse,
+    "/checkout/{token}/complete",
+    response_model=CompleteCheckoutResponse,
     status_code=status.HTTP_200_OK,
-    summary="Confirm payment (no auth)",
-    description="Confirm payment using payment_intent_id from checkout and card_token (Stripe PaymentMethod/token). No auth token required.",
+    summary="Complete checkout (no auth)",
+    description="Record payment for this checkout (user has paid on frontend). Send optional amount in body; if omitted, checkout amount is used. Returns payment_id and remaining_balance.",
     tags=["payments"],
+    responses={400: {"description": "Checkout not found, expired, or already completed"}},
 )
-async def confirm_payment(
-    data: PublicPaymentRequest,
+async def complete_checkout(
+    token: str,
+    data: Optional[CompleteCheckoutRequest] = Body(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Confirm Stripe PaymentIntent with card; records payment and returns transaction."""
+    """Complete checkout: record the payment and mark checkout as completed. No auth required."""
     service = PaymentService(db)
-    result = await service.confirm_public_payment(
-        payment_intent_id=data.payment_intent_id,
-        card_token=data.card_token,
-    )
-    return MakePaymentResponse(
-        success=result["success"],
+    amount = data.amount if data is not None else None
+    result = await service.complete_checkout(token, amount=amount)
+    if not result.get("success"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "message": result.get("message", "Invalid request")},
+        )
+    return CompleteCheckoutResponse(
+        success=True,
         message=result["message"],
-        transaction=result.get("transaction"),
+        payment_id=result["payment_id"],
+        remaining_balance=result["remaining_balance"],
     )
 
 
-# --- Make Payment (customer, card token) ---
+# --- External payment (no auth): record payment from external system ---
 @router.post(
-    "/",
-    response_model=MakePaymentResponse,
+    "/update-payment",
+    response_model=UpdatePaymentResponse,
     status_code=status.HTTP_200_OK,
-    summary="Make payment",
-    description="Flexible payment: pay any amount. Applied to earliest dues first (overdue, unpaid, future).",
+    summary="Record payment (external system)",
+    description="Record a payment from an external payment system. No authentication required. Provide customer_id, loan_id, and amount. Payment is applied to earliest unpaid installments. Returns payment_id and remaining_balance on success.",
     tags=["payments"],
+    responses={
+        200: {"description": "Payment recorded successfully", "model": UpdatePaymentResponse},
+        400: {"description": "Validation error", "model": UpdatePaymentErrorResponse},
+    },
 )
-async def make_payment(
-    data: MakePaymentRequest,
-    current_customer: Customer = Depends(get_current_customer),
+async def update_payment(
+    data: UpdatePaymentRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Accepts card_token and payment_amount. Flexible: pay any amount; applied to earliest dues first."""
+    """Record a payment (customer_id, loan_id, amount). Used by external payment systems. No auth required."""
     service = PaymentService(db)
-    result = await service.make_payment(
-        customer_id=current_customer.id,
+    result = await service.record_external_payment(
+        customer_id=data.customer_id,
         loan_id=data.loan_id,
-        card_token=data.card_token,
-        payment_amount=data.payment_amount,
+        amount=data.amount,
     )
-    return MakePaymentResponse(
-        success=result["success"],
+    if not result.get("success"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=UpdatePaymentErrorResponse(
+                success=False,
+                message=result.get("message", "Invalid request"),
+            ).model_dump(),
+        )
+    return UpdatePaymentResponse(
+        success=True,
         message=result["message"],
-        transaction=result.get("transaction"),
-        charged_amount=result.get("charged_amount", 0),
-        requested_amount=result.get("requested_amount", 0),
-        excess_ignored=result.get("excess_ignored"),
+        payment_id=result["payment_id"],
+        remaining_balance=result["remaining_balance"],
     )
 
 

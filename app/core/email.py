@@ -259,3 +259,38 @@ async def send_overdue_reminder_email(
         body=html_body,
         is_html=True,
     )
+
+
+async def send_payment_link_email(
+    customer_email: str,
+    customer_name: str,
+    payment_link: str,
+    amount: str,
+    vehicle_display: str | None = None,
+) -> bool:
+    """
+    Send email to customer with payment link (created by admin checkout).
+    payment_link: full URL for the customer to open and pay (e.g. https://app.example.com/pay?token=xxx).
+    """
+    subject = "AutoLoanPro - Payment link for your loan"
+    vehicle_line = f"<p><strong>Vehicle:</strong> {vehicle_display}</p>" if vehicle_display else ""
+    html_body = f"""
+<html>
+  <body>
+    <h2>Payment link</h2>
+    <p>Dear {customer_name},</p>
+    <p>You have a payment due. Click the link below to pay <strong>{amount}</strong>.</p>
+    {vehicle_line}
+    <p><a href="{payment_link}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 16px 0;">Pay now</a></p>
+    <p>Or copy this link: {payment_link}</p>
+    <p><em>This link will expire after 7 days. If you have already paid, please ignore this email.</em></p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
+    return await send_email(
+        to_email=customer_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+    )

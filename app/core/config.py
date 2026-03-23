@@ -35,11 +35,6 @@ class Settings(BaseSettings):
     S3_CUSTOMER_PROFILE_PREFIX: str = "customer-profiles"
     S3_ADMIN_PROFILE_PREFIX: str = "admin-profiles"
 
-    # Stripe – from .env: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_CURRENCY
-    STRIPE_SECRET_KEY: str = ""
-    STRIPE_PUBLISHABLE_KEY: str = ""
-    STRIPE_CURRENCY: str = "usd"
-
     # Payment notification cron (env: CRON_PAYMENT_NOTIFICATION_INTERVAL_HOURS, OVERDUE_DAYS_FOR_NOTIFICATION)
     CRON_PAYMENT_NOTIFICATION_INTERVAL_HOURS: float = Field(default=1.0, description="Cron run interval in hours")
     OVERDUE_DAYS_FOR_NOTIFICATION: int = Field(default=7, description="Consider payment overdue after this many days past due")
@@ -50,6 +45,9 @@ class Settings(BaseSettings):
 
     # Admin forgot password: base URL for reset link in email (e.g. https://admin.example.com). Optional.
     ADMIN_PASSWORD_RESET_BASE_URL: str = Field(default="", description="Base URL for admin password reset link")
+
+    # Payment link: base URL for customer payment page (e.g. https://app.example.com/pay). Used in checkout email.
+    PAYMENT_LINK_BASE_URL: str = Field(default="", description="Base URL for payment page; link sent in checkout email will be {PAYMENT_LINK_BASE_URL}?token={token}")
 
     class Config:
         extra = "ignore"

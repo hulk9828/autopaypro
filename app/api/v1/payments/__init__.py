@@ -1,1 +1,1 @@
-# Payments API (admin + Stripe)
+# Payments API (admin + external payment recording)

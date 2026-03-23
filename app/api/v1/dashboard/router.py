@@ -1,7 +1,11 @@
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dashboard.schemas import DashboardResponse, RecentPaymentsResponse
+from app.api.v1.dashboard.schemas import (
+    DashboardResponse,
+    RecentPaymentsResponse,
+    CustomersWithPendingLoanResponse,
+)
 from app.api.v1.dashboard.service import DashboardService
 from app.core.deps import get_db, get_current_active_admin_user
 from app.models.user import User
@@ -46,3 +50,21 @@ async def get_recent_payments(
     dashboard_service = DashboardService(db)
     recent_payments = await dashboard_service.get_recent_payments(limit=limit)
     return RecentPaymentsResponse(recent_payments=recent_payments)
+
+
+@router.get(
+    "/pending-loans",
+    response_model=CustomersWithPendingLoanResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Customers with pending loan amount",
+    description="List customers who have pending loan amount (remaining balance). Returns customer details, loan_id, and pending EMIs (due date and amount) each user has to pay. Admin only.",
+    tags=["admin-dashboard"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def get_customers_with_pending_loan(
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all customers with pending loan amount: customer details, loan ID, and pending EMIs."""
+    dashboard_service = DashboardService(db)
+    return await dashboard_service.get_customers_with_pending_loan()

@@ -398,3 +398,92 @@ class NotificationListResponse(BaseModel):
     """Paginated list of notifications."""
     items: list[NotificationItem] = Field(default_factory=list)
     total: int = Field(..., description="Total count for pagination")
+
+
+# --- External payment (no auth): record payment from external system ---
+class UpdatePaymentRequest(BaseModel):
+    """Request to record a payment from an external payment system. No authentication required."""
+    customer_id: UUID = Field(..., description="Customer ID")
+    loan_id: UUID = Field(..., description="Loan ID")
+    amount: float = Field(..., gt=0, description="Payment amount (must be positive)")
+
+    @model_validator(mode="after")
+    def amount_positive(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValueError("amount must be greater than 0")
+        return self
+
+
+class UpdatePaymentResponse(BaseModel):
+    """Success response for update-payment endpoint."""
+    success: bool = Field(True, description="Whether the payment was recorded successfully")
+    message: str = Field(..., description="Human-readable message")
+    payment_id: UUID = Field(..., description="Created payment record ID")
+    remaining_balance: float = Field(..., description="Remaining loan balance after this payment")
+
+
+class UpdatePaymentErrorResponse(BaseModel):
+    """Error response for update-payment endpoint."""
+    success: bool = Field(False, description="Always false on error")
+    message: str = Field(..., description="Error description (e.g. Customer not found, Loan not found, Invalid amount)")
+
+
+# --- Checkout: create (admin), fetch by token, complete ---
+class CreateCheckoutRequest(BaseModel):
+    """Admin creates a checkout and sends payment link to customer email."""
+    customer_id: UUID = Field(..., description="Customer ID")
+    loan_id: UUID = Field(..., description="Loan ID")
+    amount: float | None = Field(None, gt=0, description="Amount to pay; if omitted, use full remaining balance")
+
+    @model_validator(mode="after")
+    def amount_positive_if_provided(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValueError("amount must be greater than 0")
+        return self
+
+
+class CreateCheckoutResponse(BaseModel):
+    """Response after creating checkout: link sent to customer email."""
+    checkout_id: UUID = Field(..., description="Checkout record ID")
+    token: str = Field(..., description="Token for the payment link (use in GET /checkout/{token})")
+    payment_link: str = Field(..., description="Full URL to send to customer (already sent to their email)")
+    amount: float = Field(..., description="Amount for this checkout")
+    remaining_balance: float = Field(..., description="Remaining balance on loan after this payment (or before if not yet paid)")
+    expires_at: datetime = Field(..., description="Link expiry time")
+    email_sent_to: str = Field(..., description="Email address the link was sent to")
+
+
+class GetCheckoutResponse(BaseModel):
+    """Checkout details for frontend (fetch by token, no auth)."""
+    checkout_id: UUID
+    token: str
+    customer_name: str = Field(..., description="Customer full name")
+    customer_email: str | None = Field(None, description="Customer email (optional for display)")
+    loan_id: UUID
+    vehicle_display: str | None = Field(None, description="Vehicle year make model")
+    amount: float = Field(..., description="Amount to pay")
+    remaining_balance: float = Field(..., description="Current remaining balance on loan")
+    status: str = Field(..., description="pending | completed | expired")
+    expires_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CompleteCheckoutRequest(BaseModel):
+    """Optional body when completing checkout; if amount omitted, use checkout amount."""
+    amount: float | None = Field(None, gt=0, description="Amount paid; if omitted, use checkout amount")
+
+    @model_validator(mode="after")
+    def amount_positive_if_provided(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValueError("amount must be greater than 0")
+        return self
+
+
+class CompleteCheckoutResponse(BaseModel):
+    """Response after completing checkout (payment recorded)."""
+    success: bool = Field(True, description="Payment recorded successfully")
+    message: str = Field(..., description="Human-readable message")
+    payment_id: UUID = Field(..., description="Created payment record ID")
+    remaining_balance: float = Field(..., description="Remaining loan balance after this payment")
