@@ -11,6 +11,7 @@ class CreateLeaseRequest(BaseModel):
     """Request to create a new vehicle lease with loan terms."""
     customer_id: UUID = Field(..., description="Existing customer ID")
     vehicle_id: UUID = Field(..., description="Available vehicle ID")
+    contract_number: str = Field(..., min_length=1, max_length=100, description="Unique contract number for this customer-vehicle lease")
     lease_price: float = Field(..., gt=0, description="Lease price for this vehicle (entered when assigning to customer)")
     lease_amount: float = Field(..., gt=0, description="Total lease/finance amount")
     down_payment: float = Field(..., ge=0, description="Down payment / security deposit")
@@ -57,6 +58,7 @@ class LeaseResponse(BaseModel):
     customer_id: UUID
     customer_name: str
     vehicle_id: UUID
+    contract_number: str
     vehicle_display: str
     lease_amount: float
     down_payment: float
@@ -78,6 +80,7 @@ class LeaseListItem(BaseModel):
     customer_id: UUID
     customer_name: str
     vehicle_id: UUID
+    contract_number: Optional[str] = None
     vehicle_display: str
     lease_amount: float
     bi_weekly_payment_amount: float

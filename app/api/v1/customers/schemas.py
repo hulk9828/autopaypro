@@ -26,6 +26,7 @@ class VehicleLease(BaseModel):
     down_payment is computed as lease_price - lease_amount if not provided.
     """
     vehicle_id: UUID
+    contract_number: str = Field(..., min_length=1, max_length=100, description="Unique contract number for this vehicle lease (set manually by admin)")
     lease_price: float = Field(..., gt=0, description="Lease price for this vehicle (total agreed price)")
     lease_amount: float = Field(
         ...,
@@ -210,6 +211,7 @@ class LoanDetail(BaseModel):
     """Loan detail information."""
     loan_id: UUID
     vehicle_id: UUID
+    contract_number: Optional[str] = Field(None, description="Contract number linked to this customer vehicle assignment")
     vehicle_vin: str
     vehicle_make: str
     vehicle_model: str
@@ -223,6 +225,7 @@ class LoanDetail(BaseModel):
     loan_term_months: float
     lease_payment_type: Literal["bi_weekly", "monthly", "semi_monthly"] = "bi_weekly"
     created_at: datetime
+    lease_end_date: Optional[datetime] = Field(None, description="When the vehicle lease term ends")
     next_payment_due_date: Optional[datetime] = None
     loan_status: Literal["open", "closed"] = Field(
         default="open",

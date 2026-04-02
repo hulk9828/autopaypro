@@ -98,6 +98,15 @@ class SaleService:
         if existing.scalar_one_or_none():
             AppException().raise_400("Vehicle is already leased to another customer")
 
+        contract_number = (data.contract_number or "").strip()
+        if not contract_number:
+            AppException().raise_400("contract_number is required")
+        existing_contract = await self.db.execute(
+            select(CustomerVehicle).where(CustomerVehicle.contract_number == contract_number)
+        )
+        if existing_contract.scalar_one_or_none():
+            AppException().raise_400(f"Contract number '{contract_number}' is already in use")
+
         amount_financed = data.lease_amount - data.down_payment
         if amount_financed < 0:
             AppException().raise_400("Down payment cannot exceed lease amount")
@@ -121,6 +130,7 @@ class SaleService:
             id=uuid.uuid4(),
             customer_id=data.customer_id,
             vehicle_id=data.vehicle_id,
+            contract_number=contract_number,
             lease_start_date=lease_start,
             lease_end_date=lease_end,
         )
@@ -162,6 +172,7 @@ class SaleService:
             customer_id=customer.id,
             customer_name=customer_name,
             vehicle_id=vehicle.id,
+            contract_number=contract_number,
             vehicle_display=vehicle_display,
             lease_amount=ensure_non_negative_amount(loan.total_purchase_price),
             down_payment=ensure_non_negative_amount(loan.down_payment),
@@ -215,9 +226,14 @@ class SaleService:
         summary_row = (await self.db.execute(q_summary)).one()
 
         q = (
-            select(Loan, Customer, Vehicle)
+            select(Loan, Customer, Vehicle, CustomerVehicle)
             .join(Customer, Loan.customer_id == Customer.id)
             .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .outerjoin(
+                CustomerVehicle,
+                (CustomerVehicle.customer_id == Loan.customer_id)
+                & (CustomerVehicle.vehicle_id == Loan.vehicle_id),
+            )
             .order_by(Loan.created_at.desc())
         )
         if customer_id is not None:
@@ -227,7 +243,7 @@ class SaleService:
         result = await self.db.execute(q)
         rows = result.all()
         out = []
-        for loan, customer, vehicle in rows:
+        for loan, customer, vehicle, customer_vehicle in rows:
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
             pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
@@ -238,6 +254,7 @@ class SaleService:
                     customer_id=loan.customer_id,
                     customer_name=customer_name,
                     vehicle_id=loan.vehicle_id,
+                    contract_number=customer_vehicle.contract_number if customer_vehicle else None,
                     vehicle_display=vehicle_display,
                     lease_amount=ensure_non_negative_amount(loan.total_purchase_price),
                     bi_weekly_payment_amount=payment_amt,
@@ -265,9 +282,14 @@ class SaleService:
         """Export leases (loans) data to Excel (.xlsx). Same filters as get_leases."""
         search_term = f"%{(search or '').strip().lower()}%" if (search and search.strip()) else None
         q = (
-            select(Loan, Customer, Vehicle)
+            select(Loan, Customer, Vehicle, CustomerVehicle)
             .join(Customer, Loan.customer_id == Customer.id)
             .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .outerjoin(
+                CustomerVehicle,
+                (CustomerVehicle.customer_id == Loan.customer_id)
+                & (CustomerVehicle.vehicle_id == Loan.vehicle_id),
+            )
             .order_by(Loan.created_at.desc())
         )
         if customer_id is not None:
@@ -286,6 +308,7 @@ class SaleService:
             "Customer ID",
             "Customer Name",
             "Vehicle ID",
+            "Contract Number",
             "Vehicle (Year Make Model)",
             "Lease Amount",
             "Down Payment",
@@ -302,7 +325,7 @@ class SaleService:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
-        for row_idx, (loan, customer, vehicle) in enumerate(rows, start=2):
+        for row_idx, (loan, customer, vehicle, customer_vehicle) in enumerate(rows, start=2):
             customer_name = f"{customer.first_name} {customer.last_name}"
             vehicle_display = f"{vehicle.year} {vehicle.make} {vehicle.model}"
             loan_status = getattr(loan, "status", "active")
@@ -315,17 +338,18 @@ class SaleService:
             ws.cell(row=row_idx, column=2, value=str(loan.customer_id))
             ws.cell(row=row_idx, column=3, value=customer_name)
             ws.cell(row=row_idx, column=4, value=str(loan.vehicle_id))
-            ws.cell(row=row_idx, column=5, value=vehicle_display)
-            ws.cell(row=row_idx, column=6, value=ensure_non_negative_amount(loan.total_purchase_price))
-            ws.cell(row=row_idx, column=7, value=ensure_non_negative_amount(loan.down_payment))
-            ws.cell(row=row_idx, column=8, value=ensure_non_negative_amount(loan.amount_financed))
+            ws.cell(row=row_idx, column=5, value=customer_vehicle.contract_number if customer_vehicle else "")
+            ws.cell(row=row_idx, column=6, value=vehicle_display)
+            ws.cell(row=row_idx, column=7, value=ensure_non_negative_amount(loan.total_purchase_price))
+            ws.cell(row=row_idx, column=8, value=ensure_non_negative_amount(loan.down_payment))
+            ws.cell(row=row_idx, column=9, value=ensure_non_negative_amount(loan.amount_financed))
             pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
-            ws.cell(row=row_idx, column=9, value=ensure_non_negative_amount(loan.bi_weekly_payment_amount))
-            ws.cell(row=row_idx, column=10, value=loan.loan_term_months)
-            ws.cell(row=row_idx, column=11, value=pt)
-            ws.cell(row=row_idx, column=12, value=_payment_schedule_description(pt))
-            ws.cell(row=row_idx, column=13, value=loan_status)
-            ws.cell(row=row_idx, column=14, value=created_at_str)
+            ws.cell(row=row_idx, column=10, value=ensure_non_negative_amount(loan.bi_weekly_payment_amount))
+            ws.cell(row=row_idx, column=11, value=loan.loan_term_months)
+            ws.cell(row=row_idx, column=12, value=pt)
+            ws.cell(row=row_idx, column=13, value=_payment_schedule_description(pt))
+            ws.cell(row=row_idx, column=14, value=loan_status)
+            ws.cell(row=row_idx, column=15, value=created_at_str)
 
         buffer = io.BytesIO()
         wb.save(buffer)

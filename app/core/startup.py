@@ -52,6 +52,26 @@ async def ensure_device_token_columns():
         logger.warning("Could not ensure device_token columns: %s", e)
 
 
+async def ensure_customer_vehicle_contract_number_column():
+    """Add contract_number column to customer_vehicles and enforce uniqueness (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(
+                text("ALTER TABLE customer_vehicles ADD COLUMN IF NOT EXISTS contract_number VARCHAR(100)")
+            )
+            await session.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_customer_vehicles_contract_number "
+                    "ON customer_vehicles (contract_number) WHERE contract_number IS NOT NULL"
+                )
+            )
+            await session.commit()
+            logger.info("customer_vehicles.contract_number column ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure customer_vehicles.contract_number: %s", e)
+
+
 async def ensure_payments_status_column():
     """Add status column to payments table if missing (idempotent)."""
     try:
@@ -102,6 +122,32 @@ async def ensure_payment_notification_logs_table():
             logger.info("Payment notification logs table ensured.")
     except Exception as e:
         logger.warning("Could not ensure payment_notification_logs table: %s", e)
+
+
+async def ensure_core_tables():
+    """
+    Create core tables if missing using SQLAlchemy metadata.
+    This keeps the app usable when DB is empty or migrations are not applied yet.
+    """
+    try:
+        # Import models so they are registered on Base.metadata before create_all()
+        from app.models.user import User  # noqa: F401
+        from app.models.admin import Admin  # noqa: F401
+        from app.models.customer import Customer  # noqa: F401
+        from app.models.vehicle import Vehicle  # noqa: F401
+        from app.models.customer_vehicle import CustomerVehicle  # noqa: F401
+        from app.models.loan import Loan  # noqa: F401
+        from app.models.payment import Payment  # noqa: F401
+        from app.models.payment_notification_log import PaymentNotificationLog  # noqa: F401
+        from app.models.checkout import Checkout  # noqa: F401
+        from app.models.content import Content  # noqa: F401
+        from app.core.database import Base, engine
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Core tables ensured via SQLAlchemy metadata.")
+    except Exception as e:
+        logger.warning("Could not ensure core tables: %s", e)
 
 
 async def ensure_admins_table_exists(session):

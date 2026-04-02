@@ -21,7 +21,7 @@ from app.core.email import send_overdue_reminder_email, send_payment_link_email
 from app.core.exceptions import AppException
 from app.core.notification_service import scope_key_for_payment, send_payment_notification
 from app.api.v1.notifications.service import send_notification_to_customers
-from app.models.checkout import Checkout, CHECKOUT_EXPIRY_DAYS, generate_checkout_token
+from app.models.checkout import Checkout
 from app.models.customer import Customer
 from app.models.loan import Loan
 from app.models.payment import Payment, PaymentMode, PaymentStatus
@@ -403,8 +403,8 @@ class PaymentService:
         amount: float | None = None,
     ) -> dict:
         """
-        Admin creates a checkout: validate customer/loan, create Checkout record with token,
-        send payment link email to customer. Returns checkout_id, token, payment_link, amount, expires_at, email_sent_to.
+        Admin generates payment-details URL and emails it to customer.
+        Does not create a checkout record.
         """
         customer = await self.db.get(Customer, customer_id)
         if not customer:
@@ -426,22 +426,10 @@ class PaymentService:
             AppException().raise_400("Invalid amount")
         apply_amount = min(apply_amount, remaining)
 
-        token = generate_checkout_token()
-        expires_at = datetime.utcnow() + timedelta(days=CHECKOUT_EXPIRY_DAYS)
-        checkout = Checkout(
-            token=token,
-            customer_id=customer_id,
-            loan_id=loan_id,
-            amount=apply_amount,
-            status="pending",
-            expires_at=expires_at,
-        )
-        self.db.add(checkout)
-        await self.db.commit()
-        await self.db.refresh(checkout)
-
         base_url = (settings.PAYMENT_LINK_BASE_URL or "").strip().rstrip("/")
-        payment_link = f"{base_url}?token={token}" if base_url else f"?token={token}"
+        amount_path = f"{apply_amount:.2f}"
+        payment_path = f"/payment-details/{amount_path}/{customer_id}/{loan_id}"
+        payment_link = f"{base_url}{payment_path}" if base_url else payment_path
 
         customer_name = f"{customer.first_name} {customer.last_name}"
         vehicle = await self.db.get(Vehicle, loan.vehicle_id)
@@ -453,15 +441,13 @@ class PaymentService:
             payment_link=payment_link,
             amount=amount_str,
             vehicle_display=vehicle_display,
+            expires_in_days=None,
         )
 
         return {
-            "checkout_id": checkout.id,
-            "token": token,
             "payment_link": payment_link,
             "amount": apply_amount,
             "remaining_balance": remaining,
-            "expires_at": expires_at,
             "email_sent_to": customer.email,
         }
 

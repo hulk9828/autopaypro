@@ -23,6 +23,17 @@ if not DATABASE_URL:
 
 print("ALEMBIC DATABASE_URL:", DATABASE_URL)
 
+
+def _to_async_url(url: str) -> str:
+    """Ensure Alembic async engine always gets an asyncpg URL."""
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
 # -------------------------------------------------
 # Alembic config
 # -------------------------------------------------
@@ -33,7 +44,8 @@ if config.config_file_name is not None:
 
 # Set the database URL in the config for autogenerate operations
 # Convert async URL to sync URL for version checking (autogenerate needs this)
-SYNC_DATABASE_URL = DATABASE_URL.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
+ASYNC_DATABASE_URL = _to_async_url(DATABASE_URL)
+SYNC_DATABASE_URL = ASYNC_DATABASE_URL.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
 config.set_main_option("sqlalchemy.url", SYNC_DATABASE_URL)
 
 # -------------------------------------------------
@@ -89,7 +101,7 @@ async def run_migrations_online() -> None:
     # Use async engine for migrations
     engine = async_engine_from_config(
         {
-            "sqlalchemy.url": DATABASE_URL
+            "sqlalchemy.url": ASYNC_DATABASE_URL
         },
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,

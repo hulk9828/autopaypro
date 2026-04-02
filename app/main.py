@@ -62,6 +62,8 @@ if STATIC_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 from app.core.startup import (
+    ensure_core_tables,
+    ensure_customer_vehicle_contract_number_column,
     ensure_default_admin,
     ensure_device_token_columns,
     ensure_payment_notification_logs_table,
@@ -74,6 +76,8 @@ from app.core.startup import (
 @app.on_event("startup")
 async def startup_event():
     """Application startup event."""
+    # Ensure core tables exist first (handles empty DB when migrations are not yet applied)
+    await ensure_core_tables()
     # Ensure payments table exists (create if missing)
     await ensure_payments_table()
     await ensure_payment_notification_logs_table()
@@ -83,6 +87,8 @@ async def startup_event():
     await ensure_payments_note_column()
     # Ensure device_token column exists (fixes "column customers.device_token does not exist")
     await ensure_device_token_columns()
+    # Ensure customer_vehicles.contract_number exists (manual unique contract number per assigned vehicle)
+    await ensure_customer_vehicle_contract_number_column()
     # Ensure default admin exists
     await ensure_default_admin()
     # Start payment notification cron (non-blocking)

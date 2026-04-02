@@ -267,6 +267,7 @@ async def send_payment_link_email(
     payment_link: str,
     amount: str,
     vehicle_display: str | None = None,
+    expires_in_days: int | None = 7,
 ) -> bool:
     """
     Send email to customer with payment link (created by admin checkout).
@@ -274,6 +275,11 @@ async def send_payment_link_email(
     """
     subject = "AutoLoanPro - Payment link for your loan"
     vehicle_line = f"<p><strong>Vehicle:</strong> {vehicle_display}</p>" if vehicle_display else ""
+    expires_line = (
+        f'<p><em>This link will expire after {expires_in_days} days. If you have already paid, please ignore this email.</em></p>'
+        if expires_in_days is not None
+        else "<p><em>If you have already paid, please ignore this email.</em></p>"
+    )
     html_body = f"""
 <html>
   <body>
@@ -283,7 +289,7 @@ async def send_payment_link_email(
     {vehicle_line}
     <p><a href="{payment_link}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 16px 0;">Pay now</a></p>
     <p>Or copy this link: {payment_link}</p>
-    <p><em>This link will expire after 7 days. If you have already paid, please ignore this email.</em></p>
+    {expires_line}
     <p>Best regards,<br>AutoLoanPro Team</p>
   </body>
 </html>

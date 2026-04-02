@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
@@ -28,8 +29,9 @@ class Settings(BaseSettings):
     MAIL_PORT: int = Field(validation_alias=AliasChoices("MAIL_PORT", "SMTP_PORT"))
 
     # S3 for profile photo upload (optional; leave empty to disable)
-    AWS_ACCESS_KEY_ID: str | None = None
-    AWS_SECRET_ACCESS_KEY: str | None = None
+    # NOTE: Keep type hints Python 3.9-compatible (avoid `str | None`).
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
     S3_BUCKET_NAME: str = ""
     S3_CUSTOMER_PROFILE_PREFIX: str = "customer-profiles"
@@ -48,6 +50,12 @@ class Settings(BaseSettings):
 
     # Payment link: base URL for customer payment page (e.g. https://app.example.com/pay). Used in checkout email.
     PAYMENT_LINK_BASE_URL: str = Field(default="", description="Base URL for payment page; link sent in checkout email will be {PAYMENT_LINK_BASE_URL}?token={token}")
+
+    # Nuvei payment gateway
+    NUVEI_MERCHANT_ID: str = Field(default="", description="Nuvei merchant ID")
+    NUVEI_MERCHANT_SITE_ID: str = Field(default="", description="Nuvei merchant site ID")
+    NUVEI_SECRET_KEY: str = Field(default="", description="Nuvei merchant secret key")
+    NUVEI_BASE_URL: str = Field(default="", description="Nuvei base URL (e.g. https://ppp-test.nuvei.com/ppp/api/v1)")
 
     class Config:
         extra = "ignore"

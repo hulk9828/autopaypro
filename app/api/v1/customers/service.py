@@ -7,7 +7,7 @@ import logging
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, cast, String, exists
 
 from app.api.v1.customers.schemas import (
     CreateCustomerRequest,
@@ -114,6 +114,15 @@ class CustomerService:
             if vehicle.status in (VehicleStatus.sold.value, VehicleStatus.leased.value):
                 AppException().raise_400(f"Vehicle with id {vehicle_lease.vehicle_id} is already leased and not available")
 
+            contract_number = (vehicle_lease.contract_number or "").strip()
+            if not contract_number:
+                AppException().raise_400("contract_number is required for each vehicle lease")
+            existing_contract = await self.db.execute(
+                select(CustomerVehicle).where(CustomerVehicle.contract_number == contract_number)
+            )
+            if existing_contract.scalar_one_or_none():
+                AppException().raise_400(f"Contract number '{contract_number}' is already in use")
+
             assigned_vehicle_ids.add(vehicle_lease.vehicle_id)
 
             # Set lease price on vehicle (entered at customer/lease assignment time)
@@ -139,6 +148,7 @@ class CustomerService:
             customer_vehicle = CustomerVehicle(
                 customer_id=new_customer.id,
                 vehicle_id=vehicle.id,
+                contract_number=contract_number,
                 lease_start_date=lease_start,
                 lease_end_date=lease_end,
             )
@@ -530,14 +540,37 @@ class CustomerService:
         )
  
     def _customer_search_filter(self, search: Optional[str]):
-        """Build filter for customer search (first_name, last_name, email)."""
+        """Build filter for customer + linked vehicle search."""
         if not search or not search.strip():
             return None
-        term = f"%{search.strip()}%"
+        search_text = search.strip()
+        term = f"%{search_text}%"
+        linked_vehicle_match = exists(
+            select(1)
+            .select_from(CustomerVehicle)
+            .join(Vehicle, Vehicle.id == CustomerVehicle.vehicle_id)
+            .where(
+                and_(
+                    CustomerVehicle.customer_id == Customer.id,
+                    or_(
+                        Vehicle.make.ilike(term),
+                        Vehicle.model.ilike(term),
+                        Vehicle.year.ilike(term),
+                        Vehicle.vin.ilike(term),
+                        cast(CustomerVehicle.vehicle_id, String).ilike(term),
+                        CustomerVehicle.contract_number.ilike(term),
+                    ),
+                )
+            )
+        )
         return or_(
             Customer.first_name.ilike(term),
             Customer.last_name.ilike(term),
             Customer.email.ilike(term),
+            Customer.driver_license_number.ilike(term),
+            Customer.address.ilike(term),
+            Customer.employer_name.ilike(term),
+            linked_vehicle_match,
         )
 
     async def _get_next_payment_due_date(self, loan: Loan, payment_service: PaymentService) -> Optional[datetime]:
@@ -827,8 +860,15 @@ class CustomerService:
             AppException().raise_404(f"Customer with id {customer_id} not found")
         
         result = await self.db.execute(
-            select(Loan, Vehicle)
+            select(Loan, Vehicle, CustomerVehicle)
             .join(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .outerjoin(
+                CustomerVehicle,
+                and_(
+                    CustomerVehicle.customer_id == Loan.customer_id,
+                    CustomerVehicle.vehicle_id == Loan.vehicle_id,
+                ),
+            )
             .where(Loan.customer_id == customer_id)
         )
         loans_with_vehicles = result.all()
@@ -836,7 +876,7 @@ class CustomerService:
         earliest_next_due: Optional[datetime] = None
         next_payment_amount_val: Optional[float] = None
         payment_service = PaymentService(self.db)
-        for loan, vehicle in loans_with_vehicles:
+        for loan, vehicle, customer_vehicle in loans_with_vehicles:
             next_due = await self._get_next_payment_due_date(loan, payment_service)
             if earliest_next_due is None or (next_due and next_due < earliest_next_due):
                 earliest_next_due = next_due
@@ -847,6 +887,7 @@ class CustomerService:
             loan_detail = LoanDetail(
                 loan_id=loan.id,
                 vehicle_id=vehicle.id,
+                contract_number=customer_vehicle.contract_number if customer_vehicle else None,
                 vehicle_vin=vehicle.vin,
                 vehicle_make=vehicle.make,
                 vehicle_model=vehicle.model,
@@ -860,6 +901,7 @@ class CustomerService:
                 loan_term_months=loan.loan_term_months,
                 lease_payment_type=pt,
                 created_at=loan.created_at,
+                lease_end_date=customer_vehicle.lease_end_date if customer_vehicle else None,
                 next_payment_due_date=next_due,
                 loan_status=loan_status,
             )

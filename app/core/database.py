@@ -1,5 +1,3 @@
-import os
-
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 
@@ -8,6 +6,10 @@ from app.core.config import settings
 
 def get_database_url():
     db_url = settings.DATABASE_URL
+    if db_url.startswith("postgresql+psycopg2://"):
+        db_url = db_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    elif db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     if "postgresql" in db_url and "sslmode" not in db_url and settings.ENVIRONMENT != "development":
         return f"{db_url}?sslmode=require"
     return db_url

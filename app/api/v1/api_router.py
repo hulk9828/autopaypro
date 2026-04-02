@@ -12,6 +12,7 @@ from app.api.v1.contents.router import router as contents_router
 from app.api.v1.calendar.router import router as calendar_router
 from app.api.v1.notifications.router import router as notifications_router
 from app.api.v1.payments.router import router as payments_router
+from app.routers.nuvei import router as nuvei_router
 
 api_router = APIRouter()
 api_router.include_router(health_router, prefix="/health", tags=["health"])
@@ -26,3 +27,4 @@ api_router.include_router(contents_router, prefix="/contents", tags=["content"])
 api_router.include_router(calendar_router, prefix="/calendar", tags=["calendar"])
 api_router.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(payments_router, prefix="/payments", tags=["payments"])
+api_router.include_router(nuvei_router, prefix="/nuvei", tags=["nuvei"])

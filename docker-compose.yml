@@ -7,9 +7,6 @@ services:
     restart: always
     env_file:
       - .env
-    environment:
-      # Connect to host Postgres; use same user as in .env (POSTGRES_USER/POSTGRES_PASSWORD)
-      - DATABASE_URL=postgresql+asyncpg://payment_user:1234@host.docker.internal:5432/payment_db
     extra_hosts:
       # Required on Linux: resolve host.docker.internal to the host (so container can reach host Postgres)
       - "host.docker.internal:host-gateway"

@@ -48,7 +48,10 @@ router = APIRouter()
 async def get_all_customers(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    search: Optional[str] = Query(None, description="Search by first name, last name, or email"),
+    search: Optional[str] = Query(
+        None,
+        description="Search by customer first/last name, email, driver license number, address, employer name, or linked vehicle make/model/year/VIN, vehicle_id, and contract number",
+    ),
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -216,16 +219,14 @@ async def upload_customer_profile_photo(
     response_model=CustomerDetailResponse,
     status_code=status.HTTP_200_OK,
     summary="Get customer by ID",
-    description="Get detailed customer information including loans and vehicles. Admin only.",
+    description="Get detailed customer information including loans and vehicles.",
     tags=["admin-customers"],
-    dependencies=[Depends(get_current_active_admin_user)]
 )
 async def get_customer_by_id(
     customer_id: UUID,
-    current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get detailed customer information by ID. Only admins can access this endpoint."""
+    """Get detailed customer information by customer ID."""
     customer_service = CustomerService(db)
     customer_detail = await customer_service.get_customer_details(customer_id)
     return customer_detail

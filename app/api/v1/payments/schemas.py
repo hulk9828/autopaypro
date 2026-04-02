@@ -443,13 +443,10 @@ class CreateCheckoutRequest(BaseModel):
 
 
 class CreateCheckoutResponse(BaseModel):
-    """Response after creating checkout: link sent to customer email."""
-    checkout_id: UUID = Field(..., description="Checkout record ID")
-    token: str = Field(..., description="Token for the payment link (use in GET /checkout/{token})")
-    payment_link: str = Field(..., description="Full URL to send to customer (already sent to their email)")
+    """Response after generating payment-details link and emailing customer."""
+    payment_link: str = Field(..., description="Payment URL sent to customer email")
     amount: float = Field(..., description="Amount for this checkout")
-    remaining_balance: float = Field(..., description="Remaining balance on loan after this payment (or before if not yet paid)")
-    expires_at: datetime = Field(..., description="Link expiry time")
+    remaining_balance: float = Field(..., description="Current remaining balance on the loan")
     email_sent_to: str = Field(..., description="Email address the link was sent to")
 
 
