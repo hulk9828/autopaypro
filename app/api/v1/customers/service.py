@@ -24,6 +24,7 @@ from app.api.v1.customers.schemas import (
     CustomerPaymentScheduleResponse,
     LoanPaymentSchedule,
     PaymentScheduleEntry,
+    UpdateCustomerTransactionFeeRequest,
     _payment_schedule_description,
 )
 from app.core.exceptions import AppException
@@ -915,6 +916,7 @@ class CustomerService:
             address=customer.address,
             driver_license_number=customer.driver_license_number,
             employer_name=customer.employer_name,
+            transaction_fee=ensure_non_negative_amount(getattr(customer, "transaction_fee", 0.0)),
             account_status=customer.account_status,
             created_at=customer.created_at,
             updated_at=customer.updated_at,
@@ -923,3 +925,17 @@ class CustomerService:
             next_payment_amount=ensure_non_negative_amount(next_payment_amount_val) if next_payment_amount_val is not None else None,
             loans=loan_details
         )
+
+    async def update_customer_transaction_fee(
+        self,
+        customer_id: uuid.UUID,
+        data: UpdateCustomerTransactionFeeRequest,
+    ) -> Customer:
+        customer = await self.get_customer_by_id(customer_id)
+        if not customer:
+            AppException().raise_404(f"Customer with id {customer_id} not found")
+        customer.transaction_fee = ensure_non_negative_amount(data.transaction_fee)
+        self.db.add(customer)
+        await self.db.commit()
+        await self.db.refresh(customer)
+        return customer

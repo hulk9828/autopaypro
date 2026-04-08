@@ -17,7 +17,12 @@ from app.api.v1.payments.schemas import (
     TransactionItem,
 )
 from app.core.config import settings
-from app.core.email import send_overdue_reminder_email, send_payment_link_email
+from app.core.email import (
+    send_overdue_reminder_email,
+    send_payment_link_email,
+    send_admin_payment_completed_email,
+    send_payment_received_email,
+)
 from app.core.exceptions import AppException
 from app.core.notification_service import scope_key_for_payment, send_payment_notification
 from app.api.v1.notifications.service import send_notification_to_customers
@@ -27,6 +32,7 @@ from app.models.loan import Loan
 from app.models.payment import Payment, PaymentMode, PaymentStatus
 from app.models.payment_notification_log import PaymentNotificationLog
 from app.models.vehicle import Vehicle
+from app.models.admin import Admin
 from app.core.utils import ensure_non_negative_amount as _ensure_non_negative_amount
 from app.core.loan_schedule import get_due_dates_range as _schedule_due_dates_range
 
@@ -389,6 +395,27 @@ class PaymentService:
         remaining_balance = _round_amount(
             float(loan.amount_financed)
         )
+        customer_name = f"{customer.first_name} {customer.last_name}".strip()
+        await send_payment_received_email(
+            customer_email=customer.email,
+            customer_name=customer_name,
+            amount=apply_amount,
+            remaining_balance=remaining_balance,
+            loan_id=str(loan_id),
+        )
+        admins_result = await self.db.execute(
+            select(Admin.email).where(Admin.is_active == True)  # noqa: E712
+        )
+        admin_emails = [email for email in admins_result.scalars().all() if email]
+        for admin_email in admin_emails:
+            await send_admin_payment_completed_email(
+                admin_email=admin_email,
+                customer_name=customer_name,
+                customer_email=customer.email,
+                amount=apply_amount,
+                remaining_balance=remaining_balance,
+                loan_id=str(loan_id),
+            )
         return {
             "success": True,
             "message": "Payment recorded successfully",
@@ -633,37 +660,48 @@ class PaymentService:
         self,
         customer_id: UUID,
         loan_id: UUID,
-        due_date_iso: str,
         amount: float,
         payment_method: str,
         note: str | None = None,
     ) -> TransactionItem | None:
-        """Admin records a manual payment received from a customer. Returns TransactionItem or None if invalid."""
+        """Admin records a manual payment. No due-date input; payment date is when admin records it."""
         loan = await self.db.get(Loan, loan_id)
         if not loan:
             return None
         if loan.customer_id != customer_id:
             return None
-        try:
-            due_dt = _parse_due_date_iso(due_date_iso)
-        except ValueError:
-            return None
-        validated = await self.validate_due_date_for_loan(loan_id, customer_id, due_dt, only_completed=True)
-        if not validated:
-            return None  # Invalid or already paid due date
         amount_safe = _ensure_non_negative_amount(amount)
+        if amount_safe <= 0:
+            return None
+        if getattr(loan, "status", "active") == "closed":
+            return None
+
+        remaining_before = _round_amount(
+            float(loan.amount_financed) - float(getattr(loan, "total_paid", 0))
+        )
+        if remaining_before <= 0:
+            return None
+        apply_amount = _round_amount(min(amount_safe, remaining_before))
+        if apply_amount <= 0:
+            return None
+
+        now = datetime.utcnow()
         emi_amt = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
-        payment = await self._record_manual_payment(
+        payment = Payment(
             loan_id=loan_id,
             customer_id=customer_id,
-            due_date=due_dt,
-            amount=amount_safe,
-            payment_method=payment_method,
+            amount=apply_amount,
             emi_amount=emi_amt,
+            payment_method=payment_method,
+            payment_date=now,
+            due_date=now,
+            status=PaymentStatus.completed.value,
+            payment_mode=PaymentMode.manual.value,
             note=note,
         )
-        if not payment:
-            return None
+        self.db.add(payment)
+        amount_safe = apply_amount
+
         loan.amount_financed = _round_amount(max(0, float(loan.amount_financed) - amount_safe))
         loan.total_paid = _round_amount(float(getattr(loan, "total_paid", 0)) + amount_safe)
         if loan.amount_financed <= 0:
@@ -671,6 +709,7 @@ class PaymentService:
             loan.status = "closed"
         self.db.add(loan)
         await self.db.commit()
+        await self.db.refresh(payment)
         customer = await self.db.get(Customer, customer_id)
         vehicle = await self.db.get(Vehicle, loan.vehicle_id)
         customer_name = f"{customer.first_name} {customer.last_name}" if customer else None

@@ -300,3 +300,87 @@ async def send_payment_link_email(
         body=html_body,
         is_html=True,
     )
+
+
+async def send_payment_received_email(
+    customer_email: str,
+    customer_name: str,
+    amount: float,
+    remaining_balance: float,
+    loan_id: str,
+) -> bool:
+    """
+    Send payment confirmation email after a successful payment update.
+    """
+    subject = "AutoLoanPro - Payment received successfully"
+    html_body = f"""
+<html>
+  <body style="font-family: Arial, sans-serif; color: #111827; line-height: 1.5;">
+    <div style="max-width: 620px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;">
+      <div style="background: #2563eb; color: #ffffff; padding: 18px 22px;">
+        <h2 style="margin: 0;">Payment Confirmation</h2>
+      </div>
+      <div style="padding: 22px;">
+        <p>Dear {customer_name},</p>
+        <p>We have successfully received your payment. Thank you for your payment.</p>
+        <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; margin: 16px 0;">
+          <p style="margin: 6px 0;"><strong>Paid Amount:</strong> ${amount:.2f}</p>
+          <p style="margin: 6px 0;"><strong>Remaining Balance:</strong> ${remaining_balance:.2f}</p>
+          <p style="margin: 6px 0;"><strong>Loan ID:</strong> {loan_id}</p>
+        </div>
+        <p>If this payment was not made by you, please contact our support team immediately.</p>
+        <p style="margin-top: 20px;">Best regards,<br/>AutoLoanPro Team</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+    return await send_email(
+        to_email=customer_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+    )
+
+
+async def send_admin_payment_completed_email(
+    admin_email: str,
+    customer_name: str,
+    customer_email: str,
+    amount: float,
+    remaining_balance: float,
+    loan_id: str,
+) -> bool:
+    """
+    Send payment completion alert email to admin.
+    """
+    subject = "AutoLoanPro Admin - Payment completed"
+    html_body = f"""
+<html>
+  <body style="font-family: Arial, sans-serif; color: #111827; line-height: 1.5;">
+    <div style="max-width: 620px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;">
+      <div style="background: #16a34a; color: #ffffff; padding: 18px 22px;">
+        <h2 style="margin: 0;">Payment Completed</h2>
+      </div>
+      <div style="padding: 22px;">
+        <p>Hello Admin,</p>
+        <p>A payment has been completed successfully for a loan.</p>
+        <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; margin: 16px 0;">
+          <p style="margin: 6px 0;"><strong>Customer:</strong> {customer_name}</p>
+          <p style="margin: 6px 0;"><strong>Customer Email:</strong> {customer_email}</p>
+          <p style="margin: 6px 0;"><strong>Loan ID:</strong> {loan_id}</p>
+          <p style="margin: 6px 0;"><strong>Paid Amount:</strong> ${amount:.2f}</p>
+          <p style="margin: 6px 0;"><strong>Remaining Balance:</strong> ${remaining_balance:.2f}</p>
+        </div>
+        <p style="margin-top: 20px;">AutoLoanPro System Notification</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+    return await send_email(
+        to_email=admin_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+    )

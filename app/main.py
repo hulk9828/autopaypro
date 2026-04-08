@@ -63,6 +63,7 @@ if STATIC_DIR.is_dir():
 
 from app.core.startup import (
     ensure_core_tables,
+    ensure_customer_transaction_fee_column,
     ensure_customer_vehicle_contract_number_column,
     ensure_default_admin,
     ensure_device_token_columns,
@@ -89,6 +90,8 @@ async def startup_event():
     await ensure_device_token_columns()
     # Ensure customer_vehicles.contract_number exists (manual unique contract number per assigned vehicle)
     await ensure_customer_vehicle_contract_number_column()
+    # Ensure customers.transaction_fee exists (per-customer fee configurable by admin)
+    await ensure_customer_transaction_fee_column()
     # Ensure default admin exists
     await ensure_default_admin()
     # Start payment notification cron (non-blocking)

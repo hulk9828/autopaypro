@@ -158,6 +158,45 @@ async def update_payment(
     )
 
 
+@router.post(
+    "/update-loan-payment",
+    response_model=UpdatePaymentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update loan payment (no auth)",
+    description="Update loan payment without bearer token using customer_id, loan_id, and amount. This is an alias of update-payment for external clients.",
+    tags=["payments"],
+    responses={
+        200: {"description": "Payment recorded successfully", "model": UpdatePaymentResponse},
+        400: {"description": "Validation error", "model": UpdatePaymentErrorResponse},
+    },
+)
+async def update_loan_payment(
+    data: UpdatePaymentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """No-auth endpoint to record payment by customer_id + loan_id + amount."""
+    service = PaymentService(db)
+    result = await service.record_external_payment(
+        customer_id=data.customer_id,
+        loan_id=data.loan_id,
+        amount=data.amount,
+    )
+    if not result.get("success"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=UpdatePaymentErrorResponse(
+                success=False,
+                message=result.get("message", "Invalid request"),
+            ).model_dump(),
+        )
+    return UpdatePaymentResponse(
+        success=True,
+        message=result["message"],
+        payment_id=result["payment_id"],
+        remaining_balance=result["remaining_balance"],
+    )
+
+
 # --- Notifications (customer) ---
 @router.get(
     "/my-notifications",
@@ -236,7 +275,7 @@ async def my_payment_receipt(
     response_model=TransactionItem,
     status_code=status.HTTP_200_OK,
     summary="Record manual payment (admin)",
-    description="Admin records a manual payment received from a customer: select customer, loan, due date, amount paid, payment method, and optional note.",
+    description="Admin records a manual payment using customer_id, loan_id, amount, payment_method, and optional note. Payment date is when admin records it.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -245,19 +284,18 @@ async def record_manual_payment(
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin records a payment received manually (cash, check, etc.) from a customer."""
+    """Admin records a payment manually (cash/check/online/card)."""
     service = PaymentService(db)
     transaction = await service.record_manual_payment_admin(
         customer_id=data.customer_id,
         loan_id=data.loan_id,
-        due_date_iso=data.due_date_iso,
         amount=data.amount,
         payment_method=data.payment_method,
         note=data.note,
     )
     if not transaction:
         AppException().raise_400(
-            "Invalid or already paid due date. Ensure customer belongs to loan and the due date is an unpaid scheduled installment."
+            "Invalid request. Ensure customer belongs to loan and amount is greater than 0."
         )
     return transaction
 

@@ -72,6 +72,20 @@ async def ensure_customer_vehicle_contract_number_column():
         logger.warning("Could not ensure customer_vehicles.contract_number: %s", e)
 
 
+async def ensure_customer_transaction_fee_column():
+    """Add transaction_fee column to customers if missing (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(
+                text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS transaction_fee FLOAT DEFAULT 0.0 NOT NULL")
+            )
+            await session.commit()
+            logger.info("customers.transaction_fee column ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure customers.transaction_fee: %s", e)
+
+
 async def ensure_payments_status_column():
     """Add status column to payments table if missing (idempotent)."""
     try:

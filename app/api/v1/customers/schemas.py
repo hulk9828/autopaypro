@@ -85,6 +85,7 @@ class CustomerResponse(BaseModel):
     address: str
     driver_license_number: str
     employer_name: Optional[str] = None
+    transaction_fee: float = 0.0
     account_status: str
 
     class Config:
@@ -101,6 +102,7 @@ class CustomerProfileResponse(BaseModel):
     address: str
     driver_license_number: str
     employer_name: Optional[str] = None
+    transaction_fee: float = 0.0
     profile_pic: Optional[str] = None
     account_status: str
     device_token: Optional[str] = None
@@ -109,6 +111,11 @@ class CustomerProfileResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CustomerTransactionFeeResponse(BaseModel):
+    customer_id: UUID
+    transaction_fee: float = 0.0
 
 
 class CustomerProfileUpdate(BaseModel):
@@ -276,6 +283,7 @@ class CustomerDetailResponse(BaseModel):
     address: str
     driver_license_number: str
     employer_name: Optional[str]
+    transaction_fee: float = 0.0
     account_status: str
     created_at: datetime
     updated_at: datetime
@@ -295,3 +303,7 @@ class CustomerListResponse(BaseModel):
     active_loans: int
     new_this_week: int
     overdue_count: int
+
+
+class UpdateCustomerTransactionFeeRequest(BaseModel):
+    transaction_fee: float = Field(..., ge=0, description="Per-customer transaction fee managed by admin")

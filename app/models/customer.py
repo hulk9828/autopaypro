@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, DateTime, String
+from sqlalchemy import Column, DateTime, Float, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -22,6 +22,7 @@ class Customer(Base):
     address = Column(String, nullable=False)
     driver_license_number = Column(String, unique=True, nullable=False)
     employer_name = Column(String, nullable=True)
+    transaction_fee = Column(Float, nullable=False, default=0.0)
     profile_pic = Column(String, nullable=True)
     account_status = Column(String, default=AccountStatus.active.value, nullable=False)
     otp_code = Column(String, nullable=True)

@@ -207,7 +207,6 @@ class RecordManualPaymentRequest(BaseModel):
     """Admin records a manual payment received from a customer."""
     customer_id: UUID = Field(..., description="Customer who paid")
     loan_id: UUID = Field(..., description="Loan the payment is for")
-    due_date_iso: str = Field(..., description="Due date of the installment (ISO date/datetime)")
     amount: float = Field(..., description="Amount the customer paid (negative becomes 0)")
     payment_method: Literal["cash", "card", "online", "check"] = Field(
         ..., description="How the customer paid (cash, check, etc.)"

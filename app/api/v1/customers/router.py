@@ -17,7 +17,9 @@ from app.api.v1.customers.schemas import (
     CustomerDetailResponse,
     CustomerListResponse,
     CustomerProfileResponse,
+    CustomerTransactionFeeResponse,
     CustomerProfileUpdate,
+    UpdateCustomerTransactionFeeRequest,
     VerifyOtpRequest,
     CustomerPaymentScheduleResponse,
 )
@@ -106,6 +108,28 @@ async def get_customer_payment_schedule(
     customer_service = CustomerService(db)
     return await customer_service.get_customer_payment_schedule(
         current_customer, from_date=from_date, to_date=to_date
+    )
+
+
+@router.get(
+    "/transaction-fee",
+    response_model=CustomerTransactionFeeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get customer transaction fee",
+    description="Get transaction fee configured for the authenticated customer.",
+    tags=["customer"]
+)
+async def get_customer_transaction_fee(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+):
+    customer_service = CustomerService(db)
+    customer = await customer_service.get_customer_profile(current_customer.id)
+    if not customer:
+        AppException().raise_404("Customer not found")
+    return CustomerTransactionFeeResponse(
+        customer_id=customer.id,
+        transaction_fee=float(getattr(customer, "transaction_fee", 0.0) or 0.0),
     )
 
 
@@ -230,6 +254,26 @@ async def get_customer_by_id(
     customer_service = CustomerService(db)
     customer_detail = await customer_service.get_customer_details(customer_id)
     return customer_detail
+
+
+@router.patch(
+    "/{customer_id}/transaction-fee",
+    response_model=CustomerProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update customer transaction fee (admin)",
+    description="Admin-only endpoint to set/update per-customer transaction fee.",
+    tags=["admin-customers"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def update_customer_transaction_fee(
+    customer_id: UUID,
+    data: UpdateCustomerTransactionFeeRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    customer_service = CustomerService(db)
+    updated = await customer_service.update_customer_transaction_fee(customer_id, data)
+    return CustomerProfileResponse.model_validate(updated)
 
 
 @router.patch(
