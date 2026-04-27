@@ -211,15 +211,17 @@ async def my_notifications(
     db: AsyncSession = Depends(get_db),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=2000),
+    isread: bool = Query(False, description="If true, mark all customer notifications as read; if false, do not change read state."),
 ):
     """Get all notifications of the customer."""
     service = PaymentService(db)
-    items, total = await service.list_notifications_for_customer(
+    items, total, unread_count = await service.list_notifications_for_customer(
         customer_id=current_customer.id,
         skip=skip,
         limit=limit,
+        isread=isread,
     )
-    return NotificationListResponse(items=items, total=total)
+    return NotificationListResponse(items=items, total=total, unread_count=unread_count)
 
 
 # --- Transaction History (user) ---
@@ -569,15 +571,17 @@ async def admin_notifications(
     customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=2000),
+    isread: bool = Query(False, description="If true, mark matching notifications as read before listing."),
 ):
     """Get all notifications; admin sees all (or filtered by customer)."""
     service = PaymentService(db)
-    items, total = await service.list_notifications_admin(
+    items, total, unread_count = await service.list_notifications_admin(
         customer_id=customer_id,
         skip=skip,
         limit=limit,
+        isread=isread,
     )
-    return NotificationListResponse(items=items, total=total)
+    return NotificationListResponse(items=items, total=total, unread_count=unread_count)
 
 
 # --- Transaction History (admin) ---

@@ -67,6 +67,7 @@ from app.core.startup import (
     ensure_customer_vehicle_contract_number_column,
     ensure_default_admin,
     ensure_device_token_columns,
+    ensure_payment_notification_is_read_column,
     ensure_payment_notification_logs_table,
     ensure_payments_note_column,
     ensure_payments_status_column,
@@ -82,6 +83,7 @@ async def startup_event():
     # Ensure payments table exists (create if missing)
     await ensure_payments_table()
     await ensure_payment_notification_logs_table()
+    await ensure_payment_notification_is_read_column()
     # Ensure payments.status column exists (fixes "column payments.status does not exist")
     await ensure_payments_status_column()
     # Ensure payments.note column exists (fixes "column payments.note does not exist")

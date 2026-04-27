@@ -389,6 +389,7 @@ class NotificationItem(BaseModel):
     title: str = Field(..., description="Display title")
     body: str = Field(..., description="Display body")
     sent_at: datetime = Field(..., description="When the notification was sent")
+    is_read: bool = Field(False, description="Whether the notification has been read")
     customer_id: UUID | None = Field(None, description="Present only in admin list")
     customer_name: str | None = Field(None, description="Present only in admin list")
 
@@ -397,6 +398,7 @@ class NotificationListResponse(BaseModel):
     """Paginated list of notifications."""
     items: list[NotificationItem] = Field(default_factory=list)
     total: int = Field(..., description="Total count for pagination")
+    unread_count: int = Field(0, description="Unread notifications count")
 
 
 # --- External payment (no auth): record payment from external system ---

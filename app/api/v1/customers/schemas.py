@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 
 class BasicInfo(BaseModel):
@@ -283,7 +283,7 @@ class CustomerDetailResponse(BaseModel):
     address: str
     driver_license_number: str
     employer_name: Optional[str]
-    transaction_fee: float = 0.0
+    transaction_fee: float = Field(default=0.0, serialization_alias="transaction_fee")
     account_status: str
     created_at: datetime
     updated_at: datetime
@@ -306,4 +306,9 @@ class CustomerListResponse(BaseModel):
 
 
 class UpdateCustomerTransactionFeeRequest(BaseModel):
-    transaction_fee: float = Field(..., ge=0, description="Per-customer transaction fee managed by admin")
+    transaction_fee: float = Field(
+        ...,
+        ge=0,
+        validation_alias=AliasChoices("transaction_fee", "transaction-fee"),
+        description="Per-customer transaction fee managed by admin",
+    )

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status, Query
@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.vehicles.schemas import (
     CreateVehicleRequest,
     UpdateVehicleRequest,
-    VehicleResponse
+    VehicleResponse,
+    VehicleListResponse
 )
 from app.api.v1.vehicles.service import VehicleService
 from app.core.deps import get_db, get_current_active_admin_user
@@ -37,7 +38,7 @@ async def create_vehicle(
 
 @router.get(
     "/",
-    response_model=List[VehicleResponse],
+    response_model=VehicleListResponse,
     summary="Get all vehicles",
     description="Retrieve a list of vehicles with optional filtering by status and condition. Admin only.",
     dependencies=[Depends(get_current_active_admin_user)]
@@ -57,7 +58,13 @@ async def get_all_vehicles(
         status=status,
         condition=condition
     )
-    return [VehicleResponse.model_validate(vehicle) for vehicle in result["vehicles"]]
+    return VehicleListResponse(
+        items=[VehicleResponse.model_validate(vehicle) for vehicle in result["vehicles"]],
+        total_vehicles=result["total_vehicles"],
+        available=result["available"],
+        leased=result["leased"],
+        inventory_value=result["inventory_value"],
+    )
 
 
 @router.get(

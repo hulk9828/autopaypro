@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS payment_notification_logs (
     scope_key VARCHAR(255) NOT NULL,
     customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     sent_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
     CONSTRAINT uq_notification_type_scope_key UNIQUE (notification_type, scope_key)
 );
 """
@@ -136,6 +137,20 @@ async def ensure_payment_notification_logs_table():
             logger.info("Payment notification logs table ensured.")
     except Exception as e:
         logger.warning("Could not ensure payment_notification_logs table: %s", e)
+
+
+async def ensure_payment_notification_is_read_column():
+    """Add is_read column to payment_notification_logs if missing (idempotent)."""
+    try:
+        async_session_maker = get_async_session_maker_instance()
+        async with async_session_maker() as session:
+            await session.execute(
+                text("ALTER TABLE payment_notification_logs ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE NOT NULL")
+            )
+            await session.commit()
+            logger.info("payment_notification_logs.is_read column ensured.")
+    except Exception as e:
+        logger.warning("Could not ensure payment_notification_logs.is_read: %s", e)
 
 
 async def ensure_core_tables():

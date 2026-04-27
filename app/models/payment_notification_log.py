@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -21,5 +21,6 @@ class PaymentNotificationLog(Base):
     scope_key = Column(String(255), nullable=False, index=True)  # unique per (type, scope_key)
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
     sent_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_read = Column(Boolean, nullable=False, default=False)
 
     __table_args__ = (UniqueConstraint("notification_type", "scope_key", name="uq_notification_type_scope_key"),)

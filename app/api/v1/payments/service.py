@@ -1528,8 +1528,21 @@ class PaymentService:
         customer_id: UUID,
         skip: int = 0,
         limit: int = 100,
-    ) -> tuple[list[NotificationItem], int]:
-        """List payment notifications for a customer. Returns (items, total)."""
+        isread: bool = False,
+    ) -> tuple[list[NotificationItem], int, int]:
+        """List payment notifications for a customer. If isread=True, mark all as read first."""
+        if isread:
+            unread_rows = await self.db.execute(
+                select(PaymentNotificationLog).where(
+                    PaymentNotificationLog.customer_id == customer_id,
+                    PaymentNotificationLog.is_read == False,  # noqa: E712
+                )
+            )
+            for row in unread_rows.scalars().all():
+                row.is_read = True
+                self.db.add(row)
+            await self.db.commit()
+
         base = (
             select(PaymentNotificationLog)
             .where(PaymentNotificationLog.customer_id == customer_id)
@@ -1541,6 +1554,13 @@ class PaymentService:
             )
         )
         total = total_result.scalar_one() or 0
+        unread_result = await self.db.execute(
+            select(func.count(PaymentNotificationLog.id)).where(
+                PaymentNotificationLog.customer_id == customer_id,
+                PaymentNotificationLog.is_read == False,  # noqa: E712
+            )
+        )
+        unread_count = unread_result.scalar_one() or 0
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for log in result.scalars().all():
@@ -1552,19 +1572,31 @@ class PaymentService:
                     title=title,
                     body=body,
                     sent_at=log.sent_at,
+                    is_read=bool(getattr(log, "is_read", False)),
                     customer_id=None,
                     customer_name=None,
                 )
             )
-        return items, total
+        return items, total, unread_count
 
     async def list_notifications_admin(
         self,
         customer_id: UUID | None = None,
         skip: int = 0,
         limit: int = 100,
-    ) -> tuple[list[NotificationItem], int]:
+        isread: bool = False,
+    ) -> tuple[list[NotificationItem], int, int]:
         """List payment notifications for admin (all or filtered by customer_id). Returns (items, total)."""
+        if isread:
+            unread_q = select(PaymentNotificationLog).where(PaymentNotificationLog.is_read == False)  # noqa: E712
+            if customer_id is not None:
+                unread_q = unread_q.where(PaymentNotificationLog.customer_id == customer_id)
+            unread_rows = await self.db.execute(unread_q)
+            for row in unread_rows.scalars().all():
+                row.is_read = True
+                self.db.add(row)
+            await self.db.commit()
+
         base = (
             select(PaymentNotificationLog, Customer)
             .join(Customer, PaymentNotificationLog.customer_id == Customer.id)
@@ -1576,6 +1608,11 @@ class PaymentService:
             count_q = count_q.where(PaymentNotificationLog.customer_id == customer_id)
         total_result = await self.db.execute(count_q)
         total = total_result.scalar_one() or 0
+        unread_q = select(func.count(PaymentNotificationLog.id)).where(PaymentNotificationLog.is_read == False)  # noqa: E712
+        if customer_id is not None:
+            unread_q = unread_q.where(PaymentNotificationLog.customer_id == customer_id)
+        unread_result = await self.db.execute(unread_q)
+        unread_count = unread_result.scalar_one() or 0
         result = await self.db.execute(base.offset(skip).limit(limit))
         items = []
         for log, customer in result.all():
@@ -1588,8 +1625,9 @@ class PaymentService:
                     title=title,
                     body=body,
                     sent_at=log.sent_at,
+                    is_read=bool(getattr(log, "is_read", False)),
                     customer_id=log.customer_id,
                     customer_name=customer_name,
                 )
             )
-        return items, total
+        return items, total, unread_count

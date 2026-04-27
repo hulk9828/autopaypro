@@ -273,6 +273,7 @@ async def update_customer_transaction_fee(
 ):
     customer_service = CustomerService(db)
     updated = await customer_service.update_customer_transaction_fee(customer_id, data)
+
     return CustomerProfileResponse.model_validate(updated)
 
 

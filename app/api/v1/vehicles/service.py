@@ -1,8 +1,8 @@
-from typing import List, Optional
+from typing import Optional
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.v1.vehicles.schemas import CreateVehicleRequest, UpdateVehicleRequest
 from app.core.exceptions import AppException
@@ -65,7 +65,7 @@ class VehicleService:
         limit: int = 100,
         status: Optional[str] = None,
         condition: Optional[str] = None
-    ) -> List[Vehicle]:
+    ) -> dict:
         query = select(Vehicle)
 
         if status:
@@ -76,7 +76,25 @@ class VehicleService:
         query = query.offset(skip).limit(limit).order_by(Vehicle.created_at.desc())
 
         result = await self.db.execute(query)
-        return {"message": "Vehicles retrieved successfully", "vehicles": list(result.scalars().all())}
+        vehicles = list(result.scalars().all())
+
+        total_result = await self.db.execute(select(func.count(Vehicle.id)))
+        available_result = await self.db.execute(
+            select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.available.value)
+        )
+        leased_result = await self.db.execute(
+            select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.leased.value)
+        )
+        inventory_value_result = await self.db.execute(select(func.sum(Vehicle.purchase_price)))
+
+        return {
+            "message": "Vehicles retrieved successfully",
+            "vehicles": vehicles,
+            "total_vehicles": total_result.scalar() or 0,
+            "available": available_result.scalar() or 0,
+            "leased": leased_result.scalar() or 0,
+            "inventory_value": float(inventory_value_result.scalar() or 0),
+        }
 
     async def update_vehicle(
         self,

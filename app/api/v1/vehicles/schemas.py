@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from typing import List
 
 
 class CreateVehicleRequest(BaseModel):
@@ -49,3 +50,11 @@ class VehicleResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class VehicleListResponse(BaseModel):
+    items: List[VehicleResponse]
+    total_vehicles: int
+    available: int
+    leased: int
+    inventory_value: float
