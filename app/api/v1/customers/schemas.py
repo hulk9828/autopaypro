@@ -273,6 +273,21 @@ class CustomerPaymentScheduleResponse(BaseModel):
     loans: List[LoanPaymentSchedule]
 
 
+class CustomerPaymentHistoryItem(BaseModel):
+    """Customer payment history item for admin customer details."""
+    payment_id: UUID
+    loan_id: UUID
+    vehicle_id: Optional[UUID] = None
+    vehicle_display: Optional[str] = None
+    amount: float
+    emi_amount: float
+    payment_method: str
+    status: str
+    payment_date: datetime
+    due_date: datetime
+    created_at: Optional[datetime] = None
+
+
 class CustomerDetailResponse(BaseModel):
     """Detailed customer response with loans and vehicles for admin."""
     id: UUID
@@ -291,6 +306,7 @@ class CustomerDetailResponse(BaseModel):
     next_payment_due_date: Optional[datetime] = None
     next_payment_amount: Optional[float] = None
     loans: List[LoanDetail]
+    payment_history: List[CustomerPaymentHistoryItem] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

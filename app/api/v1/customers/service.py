@@ -20,6 +20,7 @@ from app.api.v1.customers.schemas import (
     VehicleLoanInfo,
     CustomerDetailResponse,
     LoanDetail,
+    CustomerPaymentHistoryItem,
     CustomerProfileUpdate,
     CustomerPaymentScheduleResponse,
     LoanPaymentSchedule,
@@ -476,7 +477,7 @@ class CustomerService:
         for loan, vehicle in loans_with_vehicles:
             loan_start_date = loan.created_at
             loan_end_date = loan_start_date + timedelta(days=int(loan.loan_term_months * 30.44))
-            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            pt = self._normalize_lease_payment_type(getattr(loan, "lease_payment_type", "bi_weekly"))
             total_payments = int(loan.loan_term_months) if pt == "monthly" else int(loan.loan_term_months * 2)
             payment_service = PaymentService(self.db)
             next_payment_due_date = await self._get_next_payment_due_date(loan, payment_service)
@@ -490,7 +491,7 @@ class CustomerService:
                 earliest_next_due = next_payment_due_date
                 next_payment_amount = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
-            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            pt = self._normalize_lease_payment_type(getattr(loan, "lease_payment_type", "bi_weekly"))
             payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             term_months = float(loan.loan_term_months)
             if term_months >= 12 and term_months % 12 == 0:
@@ -567,6 +568,7 @@ class CustomerService:
         return or_(
             Customer.first_name.ilike(term),
             Customer.last_name.ilike(term),
+            Customer.phone.ilike(term),
             Customer.email.ilike(term),
             Customer.driver_license_number.ilike(term),
             Customer.address.ilike(term),
@@ -574,11 +576,25 @@ class CustomerService:
             linked_vehicle_match,
         )
 
+    def _normalize_lease_payment_type(self, value: Optional[str]) -> str:
+        """Normalize stored lease payment type to supported API values."""
+        raw = (value or "bi_weekly").strip().lower()
+        aliases = {
+            "biweekly": "bi_weekly",
+            "bi-weekly": "bi_weekly",
+            "semi-monthly": "semi_monthly",
+            "semimonthly": "semi_monthly",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in {"bi_weekly", "monthly", "semi_monthly"}:
+            return "bi_weekly"
+        return normalized
+
     async def _get_next_payment_due_date(self, loan: Loan, payment_service: PaymentService) -> Optional[datetime]:
         """Calculate the next payment due date for a loan (uses lease_payment_type)."""
         if getattr(loan, "status", "active") == "closed":
             return None
-        payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+        payment_type = self._normalize_lease_payment_type(getattr(loan, "lease_payment_type", "bi_weekly"))
         today = date.today()
         to_date = today + timedelta(days=365 * 2)
         due_dates = get_due_dates_range(
@@ -618,7 +634,7 @@ class CustomerService:
         loan_schedules: List[LoanPaymentSchedule] = []
 
         for loan, vehicle in loans_with_vehicles:
-            payment_type = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            payment_type = self._normalize_lease_payment_type(getattr(loan, "lease_payment_type", "bi_weekly"))
             payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_start = loan.created_at.date()
             loan_end = loan_start + timedelta(days=int(loan.loan_term_months * 30.44))
@@ -883,7 +899,7 @@ class CustomerService:
                 earliest_next_due = next_due
                 next_payment_amount_val = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_status = "closed" if getattr(loan, "status", "active") == "closed" else "open"
-            pt = getattr(loan, "lease_payment_type", "bi_weekly") or "bi_weekly"
+            pt = self._normalize_lease_payment_type(getattr(loan, "lease_payment_type", "bi_weekly"))
             payment_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             loan_detail = LoanDetail(
                 loan_id=loan.id,
@@ -923,8 +939,43 @@ class CustomerService:
             total_loans=len(loan_details),
             next_payment_due_date=earliest_next_due,
             next_payment_amount=ensure_non_negative_amount(next_payment_amount_val) if next_payment_amount_val is not None else None,
-            loans=loan_details
+            loans=loan_details,
+            payment_history=await self._get_customer_payment_history(customer_id),
         )
+
+    async def _get_customer_payment_history(self, customer_id: uuid.UUID) -> List[CustomerPaymentHistoryItem]:
+        """Get customer payment history ordered by latest payment date."""
+        result = await self.db.execute(
+            select(Payment, Loan, Vehicle)
+            .join(Loan, Payment.loan_id == Loan.id)
+            .outerjoin(Vehicle, Loan.vehicle_id == Vehicle.id)
+            .where(Payment.customer_id == customer_id)
+            .order_by(Payment.payment_date.desc(), Payment.created_at.desc())
+        )
+
+        history: List[CustomerPaymentHistoryItem] = []
+        for payment, loan, vehicle in result.all():
+            vehicle_display = (
+                f"{vehicle.year} {vehicle.make} {vehicle.model}" if vehicle else None
+            )
+            history.append(
+                CustomerPaymentHistoryItem(
+                    payment_id=payment.id,
+                    loan_id=payment.loan_id,
+                    vehicle_id=getattr(loan, "vehicle_id", None),
+                    vehicle_display=vehicle_display,
+                    amount=ensure_non_negative_amount(payment.amount),
+                    emi_amount=ensure_non_negative_amount(
+                        payment.emi_amount if payment.emi_amount is not None else payment.amount
+                    ),
+                    payment_method=payment.payment_method,
+                    status=payment.status,
+                    payment_date=payment.payment_date,
+                    due_date=payment.due_date,
+                    created_at=payment.created_at,
+                )
+            )
+        return history
 
     async def update_customer_transaction_fee(
         self,

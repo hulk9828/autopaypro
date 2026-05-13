@@ -189,56 +189,22 @@ class DashboardService:
         return recent_payments
 
     async def get_overdue_accounts(self) -> List[OverdueAccount]:
-        """Get accounts with overdue payments."""
-        today = datetime.utcnow()
-        
-        # Get all active loans
-        loans_result = await self.db.execute(
-            select(Loan, Customer)
-            .join(Customer, Loan.customer_id == Customer.id)
-            .where(Customer.account_status == AccountStatus.active.value)
-        )
-        
-        overdue_accounts = []
-        
-        for loan, customer in loans_result.all():
-            # Calculate next payment due date
-            next_due_date = await self._get_next_payment_due_date(loan)
-            
-            if next_due_date and next_due_date < today:
-                # Check if payment was made for this due date
-                payment_exists = await self.db.execute(
-                    select(Payment)
-                    .where(
-                        and_(
-                            Payment.loan_id == loan.id,
-                            Payment.due_date == next_due_date
-                        )
-                    )
-                )
-                
-                if not payment_exists.scalar_one_or_none():
-                    # This payment is overdue
-                    days_overdue = (today - next_due_date).days
-                    customer_name = f"{customer.first_name} {customer.last_name}"
-                    
-                    emi_amt = ensure_non_negative_amount(loan.bi_weekly_payment_amount)
-                    overdue_accounts.append(
-                        OverdueAccount(
-                            customer_id=customer.id,
-                            customer_name=customer_name,
-                            loan_id=loan.id,
-                            due_date=next_due_date,
-                            overdue_amount=emi_amt,
-                            emi_amount=emi_amt,
-                            days_overdue=days_overdue
-                        )
-                    )
-        
-        # Sort by days overdue (most overdue first)
-        overdue_accounts.sort(key=lambda x: x.days_overdue, reverse=True)
-        
-        return overdue_accounts
+        """Get overdue installments for dashboard using shared payments logic."""
+        payment_service = PaymentService(self.db)
+        items, _, _, _ = await payment_service.list_overdue_for_admin(skip=0, limit=500)
+
+        return [
+            OverdueAccount(
+                customer_id=item.customer_id,
+                customer_name=item.customer_name or "Unknown",
+                loan_id=item.loan_id,
+                due_date=item.due_date,
+                overdue_amount=ensure_non_negative_amount(item.amount),
+                emi_amount=ensure_non_negative_amount(item.emi_amount),
+                days_overdue=item.days_overdue,
+            )
+            for item in items
+        ]
 
     async def get_upcoming_payments(self, limit: int = 10) -> List[UpcomingPayment]:
         """Get upcoming payments within the next 30 days."""
@@ -328,8 +294,9 @@ class DashboardService:
 
     async def _count_overdue_accounts(self) -> int:
         """Count the number of overdue accounts."""
-        overdue_accounts = await self.get_overdue_accounts()
-        return len(overdue_accounts)
+        payment_service = PaymentService(self.db)
+        _, total_count, _, _ = await payment_service.list_overdue_for_admin(skip=0, limit=1)
+        return total_count
 
     async def get_customers_with_pending_loan(self) -> CustomersWithPendingLoanResponse:
         """

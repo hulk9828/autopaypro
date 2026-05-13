@@ -1,8 +1,9 @@
 from typing import Optional
 import uuid
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_, cast, String
 
 from app.api.v1.vehicles.schemas import CreateVehicleRequest, UpdateVehicleRequest
 from app.core.exceptions import AppException
@@ -62,30 +63,91 @@ class VehicleService:
     async def get_all_vehicles(
         self,
         skip: int = 0,
+        offset: Optional[int] = None,
         limit: int = 100,
+        search: Optional[str] = None,
         status: Optional[str] = None,
         condition: Optional[str] = None
     ) -> dict:
-        query = select(Vehicle)
+        filters = []
 
         if status:
-            query = query.where(Vehicle.status == status)
+            filters.append(Vehicle.status == status)
         if condition:
-            query = query.where(Vehicle.condition == condition)
+            filters.append(Vehicle.condition == condition)
+        if search and search.strip():
+            search_text = search.strip()
+            full_pattern = search_text
+            tokens = [token for token in search_text.split() if token]
+            normalized_search_text = " ".join(tokens)
 
-        query = query.offset(skip).limit(limit).order_by(Vehicle.created_at.desc())
+            def validate_regex(pattern: str, label: str = "search") -> None:
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    AppException().raise_400(f"Invalid {label} regex pattern: {exc}")
+
+            def regex_filter(pattern: str):
+                return or_(
+                    Vehicle.vin.op("~*")(pattern),
+                    Vehicle.make.op("~*")(pattern),
+                    Vehicle.model.op("~*")(pattern),
+                    cast(Vehicle.year, String).op("~*")(pattern),
+                    Vehicle.color.op("~*")(pattern),
+                    func.concat(Vehicle.make, " ", Vehicle.model).op("~*")(pattern),
+                    func.concat(Vehicle.model, " ", Vehicle.make).op("~*")(pattern),
+                )
+
+            validate_regex(full_pattern)
+            if tokens:
+                token_filters = []
+                for token in tokens:
+                    validate_regex(token, "token")
+                    token_filters.append(regex_filter(token))
+                # All tokens must match at least one searchable field.
+                filters.append(
+                    or_(
+                        and_(*token_filters),
+                        func.concat(Vehicle.make, " ", Vehicle.model).op("~*")(full_pattern),
+                        func.concat(Vehicle.model, " ", Vehicle.make).op("~*")(full_pattern),
+                    )
+                )
+            else:
+                filters.append(regex_filter(full_pattern))
+
+        query = select(Vehicle)
+        if filters:
+            query = query.where(and_(*filters))
+        if offset is not None:
+            effective_offset = offset
+        else:
+            # Backward compatible behavior:
+            # skip=0 or skip=1 -> first page, skip=2 -> second page.
+            page_index = 0 if skip <= 1 else skip - 1
+            effective_offset = page_index * limit
+        query = query.offset(effective_offset).limit(limit).order_by(Vehicle.created_at.desc())
 
         result = await self.db.execute(query)
         vehicles = list(result.scalars().all())
 
-        total_result = await self.db.execute(select(func.count(Vehicle.id)))
+        total_query = select(func.count(Vehicle.id))
+        available_query = select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.available.value)
+        leased_query = select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.leased.value)
+        inventory_value_query = select(func.sum(Vehicle.purchase_price))
+        if filters:
+            total_query = total_query.where(and_(*filters))
+            available_query = available_query.where(and_(*filters))
+            leased_query = leased_query.where(and_(*filters))
+            inventory_value_query = inventory_value_query.where(and_(*filters))
+
+        total_result = await self.db.execute(total_query)
         available_result = await self.db.execute(
-            select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.available.value)
+            available_query
         )
         leased_result = await self.db.execute(
-            select(func.count(Vehicle.id)).where(Vehicle.status == VehicleStatus.leased.value)
+            leased_query
         )
-        inventory_value_result = await self.db.execute(select(func.sum(Vehicle.purchase_price)))
+        inventory_value_result = await self.db.execute(inventory_value_query)
 
         return {
             "message": "Vehicles retrieved successfully",

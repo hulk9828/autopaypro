@@ -44,8 +44,10 @@ async def create_vehicle(
     dependencies=[Depends(get_current_active_admin_user)]
 )
 async def get_all_vehicles(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    skip: int = Query(0, ge=0, description="Page number (0/1 = first page, 2 = second page)"),
+    offset: Optional[int] = Query(None, ge=0, description="Exact number of records to skip (overrides skip when provided)"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    search: Optional[str] = Query(None, description="Search by VIN, make, model, year, or color"),
     status: Optional[str] = Query(None, description="Filter by vehicle status (available/leased)"),
     condition: Optional[str] = Query(None, description="Filter by vehicle condition (bad/good/excellent)"),
     current_admin: User = Depends(get_current_active_admin_user),
@@ -54,7 +56,9 @@ async def get_all_vehicles(
     vehicle_service = VehicleService(db)
     result = await vehicle_service.get_all_vehicles(
         skip=skip,
+        offset=offset,
         limit=limit,
+        search=search,
         status=status,
         condition=condition
     )
