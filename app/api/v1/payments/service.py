@@ -83,6 +83,9 @@ class PaymentService:
             q = q.where(Payment.status == PaymentStatus.completed.value)
         result = await self.db.execute(q)
         paid: dict[date, float] = {}
+        # Legacy rows: sum cash amounts per due; waived credits the EMI slot (amount is 0 on waived rows).
+        legacy_sum: dict[date, float] = {}
+        legacy_waive_emi: dict[date, float] = {}
         for p in result.scalars().all():
             if getattr(p, "applied_installments", None) and isinstance(p.applied_installments, list):
                 for entry in p.applied_installments:
@@ -98,8 +101,17 @@ class PaymentService:
                                 pass
             else:
                 d = p.due_date.date() if hasattr(p.due_date, "date") else p.due_date
-                amt = _ensure_non_negative_amount(p.amount)
-                paid[d] = paid.get(d, 0) + amt
+                if getattr(p, "payment_method", None) == "waived":
+                    emi = _ensure_non_negative_amount(getattr(p, "emi_amount", None) or 0)
+                    legacy_waive_emi[d] = max(legacy_waive_emi.get(d, 0.0), emi)
+                else:
+                    legacy_sum[d] = legacy_sum.get(d, 0.0) + _ensure_non_negative_amount(p.amount)
+        for d in set(legacy_sum) | set(legacy_waive_emi):
+            combined = paid.get(d, 0.0) + legacy_sum.get(d, 0.0)
+            if d in legacy_waive_emi:
+                paid[d] = max(combined, legacy_waive_emi[d])
+            else:
+                paid[d] = combined
         return paid
 
     async def _get_paid_due_dates_for_loan(self, loan_id: UUID) -> set[date]:
@@ -254,16 +266,29 @@ class PaymentService:
         emi_amount: float | None = None,
         note: str | None = None,
     ) -> Payment | None:
-        """Create manual payment record. Returns None if duplicate (completed payment already exists for loan + due date)."""
-        existing = await self.db.execute(
-            select(Payment).where(
-                Payment.loan_id == loan_id,
-                func.date(Payment.due_date) == due_date.date(),
-                Payment.status == PaymentStatus.completed.value,
+        """Create manual payment record. Returns None if duplicate (waived: only when waived already exists for due date; else any completed for same due date)."""
+        due_d = due_date.date()
+        if payment_method == "waived":
+            existing_waived = await self.db.execute(
+                select(Payment).where(
+                    Payment.loan_id == loan_id,
+                    func.date(Payment.due_date) == due_d,
+                    Payment.status == PaymentStatus.completed.value,
+                    Payment.payment_method == "waived",
+                )
             )
-        )
-        if existing.scalars().first():
-            return None
+            if existing_waived.scalars().first():
+                return None
+        else:
+            existing = await self.db.execute(
+                select(Payment).where(
+                    Payment.loan_id == loan_id,
+                    func.date(Payment.due_date) == due_d,
+                    Payment.status == PaymentStatus.completed.value,
+                )
+            )
+            if existing.scalars().first():
+                return None
         payment = Payment(
             loan_id=loan_id,
             customer_id=customer_id,
@@ -636,14 +661,22 @@ class PaymentService:
         if getattr(loan, "status", "active") == "closed":
             return None
         today = date.today()
-        from_date = (loan.created_at + timedelta(days=14)).date()
-        to_date = today
-        due_dates = _get_due_dates_range(loan, from_date, to_date)
-        paid_completed = await self._get_paid_due_dates_for_loan_completed(loan.id)
+        # Match list_overdue_for_admin: same schedule window and "remaining balance" rule (partial payments).
+        loan_start = (loan.created_at + timedelta(days=14)).date()
+        loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+        to_cap = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+        to_date = min(to_cap, today)
+        due_dates = _get_due_dates_range(loan, loan_start, to_date)
+        paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
+        amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
         earliest_overdue_dt = None
         for due_dt in due_dates:
             due_d = due_dt.date()
-            if due_d >= today or due_d in paid_completed:
+            if due_d >= today:
+                continue
+            paid_amt = paid_per.get(due_d, 0)
+            remaining = _round_amount(max(0, amount_per - paid_amt))
+            if remaining <= 0:
                 continue
             earliest_overdue_dt = due_dt
             break
@@ -947,10 +980,14 @@ class PaymentService:
         customer_id: UUID | None = None,
         loan_id: UUID | None = None,
         search: str | None = None,
+        skip: int = 0,
+        limit: int = 500,
     ) -> dict:
         """
         Get payment summary: paid dues, unpaid dues, overdue payments, totals.
         search: filter by customer name, email, or phone (case-insensitive substring).
+        items are paginated with skip/limit; total counts all matching rows.
+        Aggregate amounts (collected, pending, overdue) are over the full result set, not the page.
         """
         today = date.today()
         base_loans = (
@@ -1117,8 +1154,14 @@ class PaymentService:
             items.append({"payment_status": "unpaid_dues", **u.model_dump()})
         items.sort(key=lambda x: (x["due_date"], str(x["loan_id"])))
 
+        total_items = len(items)
+        page = items[skip : skip + limit]
+
         return {
-            "items": items,
+            "items": page,
+            "total": total_items,
+            "skip": skip,
+            "limit": limit,
             "total_collected_amount": total_collected,
             "pending_amount": pending_amount,
             "overdue_amount": overdue_amount,
@@ -1300,10 +1343,12 @@ class PaymentService:
         )
         all_items: list[OverdueItem] = []
         for loan, customer, vehicle in loans_result.all():
-            # Due dates from loan start up to (and including) yesterday
-            from_date = loan.created_at.date()
-            to_date = today
-            due_dates = _get_due_dates_range(loan, from_date, to_date)
+            # Same schedule window as get_payment_summary_admin / list_due_installments_admin
+            loan_start = (loan.created_at + timedelta(days=14)).date()
+            loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+            to_cap = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+            to_date = min(to_cap, today)
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
             paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
             amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             customer_name = f"{customer.first_name} {customer.last_name}" if customer else None
@@ -1355,9 +1400,11 @@ class PaymentService:
         # Aggregate by customer_id: overdue_count, total_amount
         customer_overdue: dict[UUID, dict] = {}
         for loan, customer, vehicle in loans_result.all():
-            from_date = loan.created_at.date()
-            to_date = today
-            due_dates = _get_due_dates_range(loan, from_date, to_date)
+            loan_start = (loan.created_at + timedelta(days=14)).date()
+            loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
+            to_cap = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
+            to_date = min(to_cap, today)
+            due_dates = _get_due_dates_range(loan, loan_start, to_date)
             paid_per = await self._get_paid_amount_per_due_date(loan.id, completed_only=True)
             amount_per = _ensure_non_negative_amount(loan.bi_weekly_payment_amount)
             for due_dt in due_dates:

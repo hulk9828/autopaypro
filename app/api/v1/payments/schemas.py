@@ -258,10 +258,12 @@ class OverdueItem(BaseModel):
 
 class OverduePaymentsResponse(BaseModel):
     """Overdue Accounts: list of overdue installments, count, total amount, and average overdue days."""
-    items: list[OverdueItem] = Field(default_factory=list, description="List of overdue payment installments")
-    total_overdue_payments: int = Field(..., description="Overdue payment count")
-    total_outstanding_amount: float = Field(..., description="Total overdue amount")
-    avg_overdue_days: float = Field(..., description="Average overdue days (avg days past due)")
+    items: list[OverdueItem] = Field(default_factory=list, description="List of overdue payment installments (one page)")
+    total_overdue_payments: int = Field(..., description="Total overdue installments across all pages (for pagination)")
+    skip: int = Field(0, description="Offset used for this page")
+    limit: int = Field(..., description="Maximum items returned in this page")
+    total_outstanding_amount: float = Field(..., description="Total overdue amount across all installments (not page-scoped)")
+    avg_overdue_days: float = Field(..., description="Average overdue days over all overdue installments (not page-scoped)")
 
 
 # --- Admin: Customers with dues (for create checkout) ---
@@ -365,8 +367,11 @@ class PaymentSummaryResponse(BaseModel):
     """Payment summary: single list of all dues with payment_status enum, plus totals."""
     items: list[PaymentSummaryItem] = Field(
         default_factory=list,
-        description="All dues in one list: payment_status = paid_dues | unpaid_dues | overdue_payments",
+        description="One page of dues: payment_status = paid_dues | unpaid_dues | overdue_payments",
     )
+    total: int = Field(..., description="Total number of due entries matching filters (for pagination)")
+    skip: int = Field(0, description="Offset used for this page")
+    limit: int = Field(..., description="Maximum items returned in this page")
     total_collected_amount: float = Field(..., description="Sum of all completed payments")
     pending_amount: float = Field(..., description="Sum of future unpaid installments")
     overdue_amount: float = Field(..., description="Sum of overdue installments")

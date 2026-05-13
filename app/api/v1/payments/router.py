@@ -498,7 +498,7 @@ async def due_installments(
     response_model=PaymentSummaryResponse,
     status_code=status.HTTP_200_OK,
     summary="Payment summary (admin)",
-    description="Get paid dues, unpaid dues, overdue payments, total collected, pending, overdue, total payment left. Search by customer name/email/phone.",
+    description="Get paid dues, unpaid dues, overdue payments, total collected, pending, overdue, total payment left. Search by customer name/email/phone. Paginate combined items with skip/limit; totals are for the full filtered dataset.",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -508,6 +508,8 @@ async def payment_summary(
     customer_id: Optional[UUID] = Query(None, description="Filter by customer ID"),
     loan_id: Optional[UUID] = Query(None, description="Filter by loan ID"),
     search: Optional[str] = Query(None, description="Search by customer name, email, or phone"),
+    skip: int = Query(0, ge=0, description="Pagination offset over the combined due list"),
+    limit: int = Query(500, ge=1, le=2000, description="Pagination page size"),
 ):
     """Payment summary: paid, unpaid, overdue lists; total collected, pending, overdue, total payment left; search."""
     service = PaymentService(db)
@@ -515,9 +517,14 @@ async def payment_summary(
         customer_id=customer_id,
         loan_id=loan_id,
         search=search,
+        skip=skip,
+        limit=limit,
     )
     return PaymentSummaryResponse(
         items=data["items"],
+        total=data["total"],
+        skip=data["skip"],
+        limit=data["limit"],
         total_collected_amount=round(data["total_collected_amount"], 2),
         pending_amount=round(data["pending_amount"], 2),
         overdue_amount=round(data["overdue_amount"], 2),
@@ -531,7 +538,7 @@ async def payment_summary(
     response_model=OverduePaymentsResponse,
     status_code=status.HTTP_200_OK,
     summary="Overdue accounts (admin)",
-    description="Overdue Accounts: list of overdue installments, overdue payment count, total overdue amount, and average overdue days.",
+    description="Overdue Accounts: paginated list of overdue installments, total overdue count, total overdue amount (all installments), and average overdue days (all installments).",
     tags=["payments"],
     dependencies=[Depends(get_current_active_admin_user)],
 )
@@ -550,6 +557,8 @@ async def overdue_payments(
     return OverduePaymentsResponse(
         items=items,
         total_overdue_payments=total_count,
+        skip=skip,
+        limit=limit,
         total_outstanding_amount=round(total_outstanding, 2),
         avg_overdue_days=round(avg_days, 2),
     )
