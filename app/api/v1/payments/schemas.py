@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, computed_field, model_validator
 
 
 # --- Receipt (payment receipt data for display/print) ---
@@ -434,21 +434,35 @@ class CreateCheckoutRequest(BaseModel):
     """Admin creates a checkout and sends payment link to customer email."""
     customer_id: UUID = Field(..., description="Customer ID")
     loan_id: UUID = Field(..., description="Loan ID")
-    amount: float | None = Field(None, gt=0, description="Amount to pay; if omitted, use full remaining balance")
+    amount: float | None = Field(
+        None,
+        gt=0,
+        validation_alias=AliasChoices("amount", "payment_amount"),
+        description="Amount to pay; if omitted, use full remaining balance. Same as payment_amount.",
+    )
 
     @model_validator(mode="after")
     def amount_positive_if_provided(self):
         if self.amount is not None and self.amount <= 0:
-            raise ValueError("amount must be greater than 0")
+            raise ValueError("amount (or payment_amount) must be greater than 0")
         return self
 
 
 class CreateCheckoutResponse(BaseModel):
     """Response after generating payment-details link and emailing customer."""
     payment_link: str = Field(..., description="Payment URL sent to customer email")
-    amount: float = Field(..., description="Amount for this checkout")
-    remaining_balance: float = Field(..., description="Current remaining balance on the loan")
+    amount: float = Field(
+        ...,
+        description="Amount for this checkout (encoded in the link); equals requested amount, capped by remaining balance",
+    )
+    remaining_balance: float = Field(..., description="Current remaining balance on the loan before this checkout is completed")
     email_sent_to: str = Field(..., description="Email address the link was sent to")
+
+    @computed_field
+    @property
+    def payment_amount(self) -> float:
+        """Same as amount; mirrors the create request field name."""
+        return self.amount
 
 
 class GetCheckoutResponse(BaseModel):
@@ -470,12 +484,17 @@ class GetCheckoutResponse(BaseModel):
 
 class CompleteCheckoutRequest(BaseModel):
     """Optional body when completing checkout; if amount omitted, use checkout amount."""
-    amount: float | None = Field(None, gt=0, description="Amount paid; if omitted, use checkout amount")
+    amount: float | None = Field(
+        None,
+        gt=0,
+        validation_alias=AliasChoices("amount", "payment_amount"),
+        description="Amount paid; if omitted, use checkout amount. Same as payment_amount.",
+    )
 
     @model_validator(mode="after")
     def amount_positive_if_provided(self):
         if self.amount is not None and self.amount <= 0:
-            raise ValueError("amount must be greater than 0")
+            raise ValueError("amount (or payment_amount) must be greater than 0")
         return self
 
 

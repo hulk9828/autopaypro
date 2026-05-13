@@ -52,7 +52,7 @@ async def get_all_customers(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     search: Optional[str] = Query(
         None,
-        description="Search by customer first/last name, email, driver license number, address, employer name, or linked vehicle make/model/year/VIN, vehicle_id, and contract number",
+        description="Search by name, phone, email, driver license (DL), address, employer, or linked vehicle VIN, contract number, make/model/year, vehicle id; VIN is also matched via active loans.",
     ),
     current_admin: User = Depends(get_current_active_admin_user),
     db: AsyncSession = Depends(get_db),

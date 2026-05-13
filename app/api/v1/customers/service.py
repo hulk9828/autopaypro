@@ -1,5 +1,6 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import asyncio
+import re
 import uuid
 import secrets
 import string
@@ -541,12 +542,60 @@ class CustomerService:
             vehicles=vehicles_info
         )
  
+    @staticmethod
+    def _ilike_pattern(raw: str) -> Tuple[str, str]:
+        """Pattern and escape char for ILIKE (treats %, _, \\ literally)."""
+        escaped = (
+            raw.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        return f"%{escaped}%", "\\"
+
+    @staticmethod
+    def _compact_identifier(raw: str) -> str:
+        """Alphanumeric-only form for VIN / DL / contract style lookups."""
+        return re.sub(r"[^A-Za-z0-9]", "", raw)
+
+    @staticmethod
+    def _strip_common_id_separators(column):
+        """Remove spaces, dashes, dots from stored identifiers for fuzzy ILIKE."""
+        return func.replace(
+            func.replace(func.replace(column, " ", ""), "-", ""),
+            ".",
+            "",
+        )
+
     def _customer_search_filter(self, search: Optional[str]):
-        """Build filter for customer + linked vehicle search."""
+        """Build filter for customer + linked vehicle/loan search (name, phone, email, DL, VIN, contract)."""
         if not search or not search.strip():
             return None
         search_text = search.strip()
-        term = f"%{search_text}%"
+        like_pat, like_esc = self._ilike_pattern(search_text)
+        compact = self._compact_identifier(search_text)
+        compact_pat, compact_esc = (
+            self._ilike_pattern(compact) if len(compact) >= 2 else (None, None)
+        )
+
+        vehicle_row_match = or_(
+            Vehicle.make.ilike(like_pat, escape=like_esc),
+            Vehicle.model.ilike(like_pat, escape=like_esc),
+            cast(Vehicle.year, String).ilike(like_pat, escape=like_esc),
+            Vehicle.vin.ilike(like_pat, escape=like_esc),
+            cast(CustomerVehicle.vehicle_id, String).ilike(like_pat, escape=like_esc),
+            CustomerVehicle.contract_number.ilike(like_pat, escape=like_esc),
+        )
+        if compact_pat is not None:
+            vehicle_row_match = or_(
+                vehicle_row_match,
+                self._strip_common_id_separators(Vehicle.vin).ilike(
+                    compact_pat, escape=compact_esc
+                ),
+                self._strip_common_id_separators(CustomerVehicle.contract_number).ilike(
+                    compact_pat, escape=compact_esc
+                ),
+            )
+
         linked_vehicle_match = exists(
             select(1)
             .select_from(CustomerVehicle)
@@ -554,27 +603,45 @@ class CustomerService:
             .where(
                 and_(
                     CustomerVehicle.customer_id == Customer.id,
-                    or_(
-                        Vehicle.make.ilike(term),
-                        Vehicle.model.ilike(term),
-                        Vehicle.year.ilike(term),
-                        Vehicle.vin.ilike(term),
-                        cast(CustomerVehicle.vehicle_id, String).ilike(term),
-                        CustomerVehicle.contract_number.ilike(term),
-                    ),
+                    vehicle_row_match,
                 )
             )
         )
-        return or_(
-            Customer.first_name.ilike(term),
-            Customer.last_name.ilike(term),
-            Customer.phone.ilike(term),
-            Customer.email.ilike(term),
-            Customer.driver_license_number.ilike(term),
-            Customer.address.ilike(term),
-            Customer.employer_name.ilike(term),
-            linked_vehicle_match,
+
+        loan_vin_match = Vehicle.vin.ilike(like_pat, escape=like_esc)
+        if compact_pat is not None:
+            loan_vin_match = or_(
+                loan_vin_match,
+                self._strip_common_id_separators(Vehicle.vin).ilike(
+                    compact_pat, escape=compact_esc
+                ),
+            )
+        loan_vehicle_match = exists(
+            select(1)
+            .select_from(Loan)
+            .join(Vehicle, Vehicle.id == Loan.vehicle_id)
+            .where(and_(Loan.customer_id == Customer.id, loan_vin_match))
         )
+
+        customer_cols = [
+            Customer.first_name.ilike(like_pat, escape=like_esc),
+            Customer.last_name.ilike(like_pat, escape=like_esc),
+            Customer.phone.ilike(like_pat, escape=like_esc),
+            Customer.email.ilike(like_pat, escape=like_esc),
+            Customer.driver_license_number.ilike(like_pat, escape=like_esc),
+            Customer.address.ilike(like_pat, escape=like_esc),
+            Customer.employer_name.ilike(like_pat, escape=like_esc),
+            linked_vehicle_match,
+            loan_vehicle_match,
+        ]
+        if compact_pat is not None:
+            customer_cols.append(
+                self._strip_common_id_separators(Customer.driver_license_number).ilike(
+                    compact_pat, escape=compact_esc
+                )
+            )
+
+        return or_(*customer_cols)
 
     def _normalize_lease_payment_type(self, value: Optional[str]) -> str:
         """Normalize stored lease payment type to supported API values."""
