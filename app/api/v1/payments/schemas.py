@@ -266,6 +266,30 @@ class OverduePaymentsResponse(BaseModel):
     avg_overdue_days: float = Field(..., description="Average overdue days over all overdue installments (not page-scoped)")
 
 
+class OverdueRemindCustomersRequest(BaseModel):
+    """Send overdue reminder email + push to specific customers (must currently have overdue installments)."""
+    customer_ids: list[UUID] = Field(
+        ...,
+        min_length=1,
+        description="One or more customer UUIDs (e.g. from GET /payments/overdue items). Duplicates are ignored. Email uses a fixed template with totals and a per-installment table.",
+    )
+
+
+class OverdueRemindCustomersResponse(BaseModel):
+    """Result of sending overdue reminders to selected customers."""
+    requested_count: int = Field(..., description="Number of customer IDs in the request (after deduplication)")
+    reminded_count: int = Field(..., description="Customers who had overdue installments and were targeted")
+    skipped_not_overdue: list[UUID] = Field(
+        default_factory=list,
+        description="Customer IDs with no current overdue installment (no email sent)",
+    )
+    emails_sent: int = Field(..., description="Overdue reminder emails sent successfully")
+    emails_failed: int = Field(..., description="Emails that failed to send")
+    notifications_sent: int = Field(..., description="Push notifications delivered")
+    no_device_count: int = Field(..., description="Targeted customers with no device token")
+    notifications_failed: int = Field(..., description="Push notifications that failed to send")
+
+
 # --- Admin: Customers with dues (for create checkout) ---
 class DueCustomerItem(BaseModel):
     """One per (customer, loan) with unpaid dues. Use loan_id + customer_id/email to call create checkout (payment_type=next)."""

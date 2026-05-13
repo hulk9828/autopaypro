@@ -21,6 +21,8 @@ from app.api.v1.payments.schemas import (
     GetCheckoutResponse,
     NotificationListResponse,
     OverduePaymentsResponse,
+    OverdueRemindCustomersRequest,
+    OverdueRemindCustomersResponse,
     PaymentReceiptResponse,
     PaymentSummaryResponse,
     RecordManualPaymentRequest,
@@ -562,6 +564,30 @@ async def overdue_payments(
         total_outstanding_amount=round(total_outstanding, 2),
         avg_overdue_days=round(avg_days, 2),
     )
+
+
+@router.post(
+    "/overdue/remind-customers",
+    response_model=OverdueRemindCustomersResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Send overdue reminder to selected customers (admin)",
+    description=(
+        "Sends a fixed-template overdue reminder email (summary + table: vehicle, due date, amount due, EMI, days overdue) "
+        "and a push notification, only for the customer_id values you provide. Use customer_id from GET /payments/overdue. "
+        "IDs with no current overdue installment appear in skipped_not_overdue and are not emailed."
+    ),
+    tags=["payments"],
+    dependencies=[Depends(get_current_active_admin_user)],
+)
+async def overdue_remind_customers(
+    data: OverdueRemindCustomersRequest,
+    current_admin: User = Depends(get_current_active_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Targeted overdue reminder for one or more customers who currently have overdue installments."""
+    service = PaymentService(db)
+    result = await service.send_overdue_reminder_for_customer_ids(data.customer_ids)
+    return OverdueRemindCustomersResponse(**result)
 
 
 # --- Notifications (admin) ---

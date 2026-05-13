@@ -1325,25 +1325,20 @@ class PaymentService:
         page = all_items[skip : skip + limit]
         return (page, total, total_amount)
 
-    async def list_overdue_for_admin(
-        self,
-        skip: int = 0,
-        limit: int = 500,
-    ) -> tuple[list[OverdueItem], int, float, float]:
-        """
-        List overdue installments (scheduled due dates in the past with no completed payment).
-        Returns (items_page, total_overdue_count, total_outstanding_amount, avg_overdue_days).
-        """
+    async def _all_overdue_installments(self, customer_id: UUID | None = None) -> list[OverdueItem]:
+        """All overdue installments (same rules as list_overdue_for_admin), optionally for one customer."""
         today = date.today()
-        loans_result = await self.db.execute(
+        q = (
             select(Loan, Customer, Vehicle)
             .join(Customer, Loan.customer_id == Customer.id)
             .join(Vehicle, Loan.vehicle_id == Vehicle.id)
             .where(Loan.status != "closed")
         )
+        if customer_id is not None:
+            q = q.where(Loan.customer_id == customer_id)
+        loans_result = await self.db.execute(q)
         all_items: list[OverdueItem] = []
         for loan, customer, vehicle in loans_result.all():
-            # Same schedule window as get_payment_summary_admin / list_due_installments_admin
             loan_start = (loan.created_at + timedelta(days=14)).date()
             loan_end = loan.created_at + timedelta(days=int(loan.loan_term_months * 30.44))
             to_cap = loan_end.date() if loan_end else today + timedelta(days=365 * 2)
@@ -1375,8 +1370,19 @@ class PaymentService:
                         loan_status=_loan_status_display(loan),
                     )
                 )
-        # Sort by due_date ascending (oldest overdue first) or by days_overdue desc
         all_items.sort(key=lambda x: (x.due_date, x.loan_id))
+        return all_items
+
+    async def list_overdue_for_admin(
+        self,
+        skip: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[OverdueItem], int, float, float]:
+        """
+        List overdue installments (scheduled due dates in the past with no completed payment).
+        Returns (items_page, total_overdue_count, total_outstanding_amount, avg_overdue_days).
+        """
+        all_items = await self._all_overdue_installments()
         total_count = len(all_items)
         total_outstanding = sum(i.amount for i in all_items)
         avg_days = (sum(i.days_overdue for i in all_items) / total_count) if total_count else 0.0
@@ -1448,6 +1454,19 @@ class PaymentService:
         emails_sent = 0
         emails_failed = 0
         for c in contacts:
+            installment_details = None
+            if email_body_override is None:
+                rows = await self._all_overdue_installments(c["customer_id"])
+                installment_details = [
+                    {
+                        "vehicle_display": r.vehicle_display or "—",
+                        "due_date": r.due_date.strftime("%Y-%m-%d %H:%M"),
+                        "amount": r.amount,
+                        "emi_amount": r.emi_amount,
+                        "days_overdue": r.days_overdue,
+                    }
+                    for r in rows
+                ]
             ok = await send_overdue_reminder_email(
                 customer_email=c["email"],
                 customer_name=c["customer_name"],
@@ -1455,6 +1474,7 @@ class PaymentService:
                 total_overdue_amount=c["total_overdue_amount"],
                 subject=email_subject,
                 body_override=email_body_override,
+                installment_details=installment_details,
             )
             if ok:
                 emails_sent += 1
@@ -1471,6 +1491,85 @@ class PaymentService:
         )
         return {
             "customer_count": len(contacts),
+            "emails_sent": emails_sent,
+            "emails_failed": emails_failed,
+            "notifications_sent": sent_count,
+            "no_device_count": no_device_count,
+            "notifications_failed": failed_count,
+        }
+
+    async def send_overdue_reminder_for_customer_ids(
+        self,
+        customer_ids: list[UUID],
+    ) -> dict:
+        """
+        Send overdue reminder email + push to the given customers.
+        Only customers who currently have at least one overdue installment (same rules as GET /overdue) are contacted.
+        Email uses a fixed template with per-installment details (vehicle, due date, amounts, days overdue).
+        """
+        unique_ids = list(dict.fromkeys(customer_ids))
+        if not unique_ids:
+            return {
+                "requested_count": 0,
+                "reminded_count": 0,
+                "skipped_not_overdue": [],
+                "emails_sent": 0,
+                "emails_failed": 0,
+                "notifications_sent": 0,
+                "no_device_count": 0,
+                "notifications_failed": 0,
+            }
+        contacts = await self.get_overdue_customer_contacts()
+        by_id: dict[UUID, dict] = {c["customer_id"]: c for c in contacts}
+        targets: list[dict] = []
+        skipped: list[UUID] = []
+        for cid in unique_ids:
+            row = by_id.get(cid)
+            if row:
+                targets.append(row)
+            else:
+                skipped.append(cid)
+        emails_sent = 0
+        emails_failed = 0
+        for c in targets:
+            rows = await self._all_overdue_installments(c["customer_id"])
+            installment_details = [
+                {
+                    "vehicle_display": r.vehicle_display or "—",
+                    "due_date": r.due_date.strftime("%Y-%m-%d %H:%M"),
+                    "amount": r.amount,
+                    "emi_amount": r.emi_amount,
+                    "days_overdue": r.days_overdue,
+                }
+                for r in rows
+            ]
+            ok = await send_overdue_reminder_email(
+                customer_email=c["email"],
+                customer_name=c["customer_name"],
+                overdue_count=c["overdue_count"],
+                total_overdue_amount=c["total_overdue_amount"],
+                installment_details=installment_details,
+            )
+            if ok:
+                emails_sent += 1
+            else:
+                emails_failed += 1
+        default_title = "Overdue Alert"
+        default_body = "You have overdue payment(s). Please log in and pay at your earliest convenience."
+        notify_ids = [c["customer_id"] for c in targets]
+        sent_count, no_device_count, failed_count = (0, 0, 0)
+        if notify_ids:
+            sent_count, no_device_count, failed_count = await send_notification_to_customers(
+                self.db,
+                title=default_title,
+                body=default_body,
+                customer_ids=notify_ids,
+                data={"type": "overdue_reminder"},
+            )
+        return {
+            "requested_count": len(unique_ids),
+            "reminded_count": len(targets),
+            "skipped_not_overdue": skipped,
             "emails_sent": emails_sent,
             "emails_failed": emails_failed,
             "notifications_sent": sent_count,

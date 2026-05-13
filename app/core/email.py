@@ -1,3 +1,4 @@
+import html
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -228,23 +229,74 @@ async def send_overdue_reminder_email(
     *,
     subject: str | None = None,
     body_override: str | None = None,
+    installment_details: list[dict] | None = None,
 ) -> bool:
     """
     Send overdue payment reminder email to a customer.
-    If subject or body_override are provided, use them; otherwise use default.
+    If body_override is set, it replaces the entire body.
+    If installment_details is set (and no body_override), uses the detailed HTML template with a per-installment table.
     """
     default_subject = "AutoLoanPro - Overdue Payment Reminder"
     if subject is None:
         subject = default_subject
+    safe_name = html.escape(customer_name or "Customer")
     if body_override is not None:
         html_body = body_override
+    elif installment_details:
+        installments = "installment" if overdue_count == 1 else "installments"
+        rows_parts: list[str] = []
+        for row in installment_details:
+            veh = html.escape(str(row.get("vehicle_display") or "—"))
+            due = html.escape(str(row.get("due_date") or ""))
+            amt = float(row.get("amount") or 0)
+            emi = float(row.get("emi_amount") or 0)
+            days = int(row.get("days_overdue") or 0)
+            rows_parts.append(
+                "<tr>"
+                f"<td>{veh}</td>"
+                f"<td>{due}</td>"
+                f"<td>${amt:,.2f}</td>"
+                f"<td>${emi:,.2f}</td>"
+                f"<td>{days}</td>"
+                "</tr>"
+            )
+        rows_html = "\n".join(rows_parts)
+        html_body = f"""
+<html>
+  <body style="font-family: Arial, sans-serif; line-height: 1.5;">
+    <h2>Overdue Payment Reminder</h2>
+    <p>Dear {safe_name},</p>
+    <p>You have <strong>{overdue_count}</strong> overdue {installments} with a combined outstanding balance of
+    <strong>${total_overdue_amount:,.2f}</strong>.</p>
+    <p><strong>Details:</strong></p>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; max-width: 720px;">
+      <thead>
+        <tr style="background-color: #f2f2f2;">
+          <th align="left">Vehicle</th>
+          <th align="left">Due date</th>
+          <th align="right">Amount due</th>
+          <th align="right">Scheduled EMI</th>
+          <th align="right">Days overdue</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html}
+      </tbody>
+    </table>
+    <p>Please log in to your account and pay at your earliest convenience to avoid additional fees or impact on your account.</p>
+    <p>If you have already made a payment, please disregard this message.</p>
+    <p>If you have any questions, contact our support team.</p>
+    <p>Best regards,<br>AutoLoanPro Team</p>
+  </body>
+</html>
+"""
     else:
         installments = "installment" if overdue_count == 1 else "installments"
         html_body = f"""
 <html>
   <body>
     <h2>Overdue Payment Reminder</h2>
-    <p>Dear {customer_name},</p>
+    <p>Dear {safe_name},</p>
     <p>You have <strong>{overdue_count}</strong> overdue {installments} totaling <strong>${total_overdue_amount:.2f}</strong>.</p>
     <p>Please log in to your account and make a payment at your earliest convenience to avoid any additional fees or impact on your account.</p>
     <p>If you have already made a payment, please disregard this message.</p>
